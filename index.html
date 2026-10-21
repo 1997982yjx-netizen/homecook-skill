@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#EEF2F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1520" media="(prefers-color-scheme: dark)">
+<title>做饭</title>
+<link rel="stylesheet" href="cook.css">
+<style>
+  /* 独立打开时的页面底色；嵌进别的页面时不需要 */
+  html, body { margin: 0; padding: 0; }
+  body { background: #EEF2F7; }
+  @media (prefers-color-scheme: dark) { body { background: #0E1520; } }
+</style>
+</head>
+<body>
+  <div id="cook-app"></div>
+
+  <!-- 顺序不能反：先数据，后脚本 -->
+  <script src="recipes.js"></script>
+  <script src="core/engine.js"></script>
+  <script src="core/vision-map.js"></script>  <!-- 拍照录入：对照食材字典，不需要可以不引 -->
+  <script src="core/vision.js"></script>      <!-- 拍照录入：调用你自己的识图接口，不需要可以不引 -->
+  <script src="cook.js"></script>
+</body>
+</html>

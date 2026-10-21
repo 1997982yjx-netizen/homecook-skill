@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>嵌入示例：把做饭模块放进你自己的页面</title>
+
+<!-- 1. 引入做饭模块的样式 -->
+<link rel="stylesheet" href="cook.css">
+
+<style>
+  /* 下面是"模拟宿主页面"自己的样式，换成你页面的就行 */
+  html, body { margin: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Noto Sans SC", sans-serif; background: #EEF2F7; }
+  .wb-top { position: sticky; top: 0; z-index: 30; height: 48px; display: flex; align-items: center; padding: 0 16px; background: #fff; border-bottom: 1px solid #DCE3EC; font-weight: 600; }
+  .wb-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; grid-template-columns: repeat(4, 1fr); height: 56px; padding-bottom: env(safe-area-inset-bottom); background: #fff; border-top: 1px solid #DCE3EC; }
+  .wb-tabs a { display: flex; align-items: center; justify-content: center; color: #5F6B7E; text-decoration: none; font-size: 13px; }
+  .wb-tabs a.on { color: #1D4E9E; font-weight: 600; }
+
+  /* 2. 告诉模块：顶部有 48px 标题栏，底部有 56px 导航，模块导航放顶部 */
+  #cook-app {
+    --ck-top-offset: 48px;
+    --ck-bottom-offset: calc(56px + env(safe-area-inset-bottom));
+    min-height: calc(100dvh - 48px);
+    padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+</style>
+</head>
+<body>
+  <header class="wb-top">我的应用</header>
+
+  <!-- 3. 挂载点：data-nav="top" 表示模块导航放在顶部，避免和页面自己的底部导航叠在一起 -->
+  <div id="cook-app" data-nav="top"></div>
+
+  <nav class="wb-tabs">
+    <a href="#">首页</a><a href="#">待办</a><a href="#" class="on">做饭</a><a href="#">我的</a>
+  </nav>
+
+  <!-- 4. 引入数据和脚本（先 recipes.js 和 core/engine.js，最后 cook.js），会自动挂到 #cook-app 上 -->
+  <script src="recipes.js"></script>
+  <script src="core/engine.js"></script>
+  <script src="core/vision-map.js"></script>  <!-- 拍照录入：对照食材字典，不需要可以不引 -->
+  <script src="core/vision.js"></script>      <!-- 拍照录入：调用你自己的识图接口，不需要可以不引 -->
+  <script src="cook.js"></script>
+</body>
+</html>

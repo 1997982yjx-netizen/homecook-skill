@@ -1,0 +1,13 @@
+{
+  "name": "homecook",
+  "version": "2.0.0",
+  "description": "按家里的食材库存算能做哪些家常菜：网页 + AI 助手 skill",
+  "license": "MIT",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "bin": { "homecook": "scripts/cook.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tools/check-recipes.js && node tools/test-engine.js && node tools/test-cli.js && node tools/test-vision.js"
+  }
+}
