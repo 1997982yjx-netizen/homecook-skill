@@ -48,7 +48,7 @@ server.listen(PORT, () => {
   console.log(`做饭页面已启动：http://localhost:${PORT}`);
   console.log(process.env.VISION_API_KEY || process.env.OPENAI_API_KEY
     ? '识图代理已开启：/api/vision-stock、/api/recipe-from-note（用的是你环境变量里的密钥）'
-    : '识图代理没开启：需要的话设置 VISION_API_KEY 后重启，或在页面「识图设置」里填自己的接口');
+    : '识图代理没开启：需要的话设置 VISION_API_KEY 后重启，或在页面「AI 接口设置」里填自己的接口');
   Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === 'IPv4' && !n.internal)
     .forEach((n) => console.log(`手机访问（同一个 Wi-Fi）：http://${n.address}:${PORT}`));
 });
