@@ -1,4 +1,4 @@
-/* 做饭模块页面脚本 v2.0.0 —— 需要先引入 recipes.js 和 core/engine.js（拍照录入还需要 core/vision-map.js 和 core/vision.js）。用法见 README.md。 */
+/* 做饭模块页面脚本 v2.0.0 —— 需要先引入 recipes.js 和 core/engine.js（拍照录入还需要 core/vision-map.js 和 core/vision.js，AI 整理菜谱还需要 core/recipe-draft.js 和 core/vision.js）。用法见 README.md。 */
 (function () {
   'use strict';
 
@@ -186,7 +186,7 @@
     var id = ++seq;
     var store = makeStore(opts);
     var S = E.normalize(store.load());
-    var ui = { photoFor: null, formPhoto: null, quickOpen: false, tab: opts.tab || 'match', rendered: null, filter: '全部', rfilter: '全部', showFar: false, q: '', rq: '', sheet: null, sheetServ: 2, opener: null, scanGen: 0, scanKind: 'stock' };
+    var ui = { photoFor: null, formPhoto: null, impShots: [], noteGen: 0, quickOpen: false, tab: opts.tab || 'match', rendered: null, filter: '全部', rfilter: '全部', showFar: false, q: '', rq: '', sheet: null, sheetServ: 2, opener: null, scanGen: 0, scanKind: 'stock' };
     var toastTimer = null, toastFn = null, cleanups = [];
 
     el.classList.add('ck');
@@ -206,7 +206,8 @@
       '<input type="file" accept="application/json,.json" hidden data-backup>' +
       '<input type="file" accept="image/*" hidden data-photo>' +
       '<input type="file" accept="image/*" capture="environment" hidden data-stock-cam>' +
-      '<input type="file" accept="image/*" hidden data-stock-gal>';
+      '<input type="file" accept="image/*" hidden data-stock-gal>' +
+      '<input type="file" accept="image/*" multiple hidden data-note-shots>';
 
     var headEl = el.querySelector('.ck-head');
     var bodyEl = el.querySelector('.ck-body');
@@ -218,9 +219,11 @@
     var photoEl = el.querySelector('input[data-photo]');
     var stockCamEl = el.querySelector('input[data-stock-cam]');
     var stockGalEl = el.querySelector('input[data-stock-gal]');
+    var noteShotEl = el.querySelector('input[data-note-shots]');
     var photoPrefix = (opts.storageKey || 'cook-module-v1') + ':';
     var photos = {}; // 菜谱 id → { full, thumb }（本机拍的或选的照片）
     var visionEndpoint = opts.visionProxy || '/api/vision-stock';
+    var recipeEndpoint = opts.recipeProxy || '/api/recipe-from-note';
     var visionKey = (opts.storageKey || 'cook-module-v1') + ':vision';
     var dlId = 'ck-dl-' + id;
 
@@ -382,7 +385,7 @@
           h += '<p class="ck-scan-alt"><button type="button" class="ck-btn-text" data-act="stock-photo" data-kind="receipt" data-src="gallery">从相册选小票</button></p>';
           h += '</div>';
           h += '<p class="ck-note ck-vision-note">识图用你自己的 AI 接口（' + (visionCfg().key ? '已设置' : '还没设置') + '）。' +
-            '<button type="button" class="ck-btn-text" data-act="vision-settings">识图设置</button></p>';
+            '<button type="button" class="ck-btn-text" data-act="vision-settings">AI 接口设置</button></p>';
           if (!names.length) {
             h += '<p class="ck-empty" style="margin-top:8px">库存是空的。可以拍照或拍小票识别，也可以在上面输入食材名，或点下面的常用食材。' +
               '</p><div class="ck-btns"><button type="button" class="ck-btn-2" data-act="demo">先用示例数据看看</button></div>';
@@ -517,7 +520,8 @@
       if (kind === 'recipe' && !(args && args.keepServ)) ui.sheetServ = S.servings;
       if (kind === 'recipe-form') {
         var fr = args && args.id ? findRecipe(args.id) : null;
-        ui.formPhoto = fr ? (photos[fr.id] ? { full: photos[fr.id].full, thumb: photos[fr.id].thumb } : fr.img ? { url: fr.img } : null) : null;
+        ui.formPhoto = args && args.draft ? (args.draft.photo || null)
+          : fr ? (photos[fr.id] ? { full: photos[fr.id].full, thumb: photos[fr.id].thumb } : fr.img ? { url: fr.img } : null) : null;
       }
       renderSheet();
       sheetEl.scrollTop = 0;
@@ -528,6 +532,7 @@
     function closeSheet() {
       if (!ui.sheet) return;
       if (ui.sheet.kind === 'stock-scan') ui.scanGen += 1;
+      if (ui.sheet.kind === 'recipe-form') { ui.impShots = []; ui.noteGen += 1; }
       ui.sheet = null;
       el.classList.remove('is-sheet');
       document.documentElement.classList.remove('ck-lock');
@@ -538,7 +543,7 @@
       if (!ui.sheet) return;
       var k = ui.sheet.kind, a = ui.sheet.args;
       var scanTitle = (k === 'stock-scan' && a.scanKind === 'receipt') ? '小票识别' : '拍照录入';
-      var title = { recipe: '菜谱', stock: '库存', ing: '新食材', 'recipe-form': '菜谱', 'stock-scan': scanTitle, vision: '识图设置' }[k] || '详情';
+      var title = { recipe: '菜谱', stock: '库存', ing: '新食材', 'recipe-form': '菜谱', 'stock-scan': scanTitle, vision: 'AI 接口设置' }[k] || '详情';
       sheetEl.setAttribute('aria-label', title);
       sheetEl.innerHTML = SHEETS[k](a);
       var sf = sheetEl.querySelector('form[data-form="stock"]');
@@ -645,21 +650,24 @@
 
       'recipe-form': function (args) {
         var r = args.id ? findRecipe(args.id) : null;
-        var rows = r ? Object.keys(r.items).map(function (k) { return { n: k, q: r.items[k] }; }) : [{}, {}, {}];
-        var sp = r ? (r.s || []).concat(r.o || []) : [];
-        var spList = allSpices();
-        var src = r && r.src ? r.src : '';
-        var steps = r && r.steps ? r.steps : [];
+        var dr = args.draft || null;
+        var rows = dr ? dr.items : r ? Object.keys(r.items).map(function (k) { return { n: k, q: r.items[k] }; }) : [{}, {}, {}];
+        if (dr && !rows.length) rows = [{}];
+        var sp = dr ? dr.sp.concat(dr.extra) : r ? (r.s || []).concat(r.o || []) : [];
+        var spList = uniq(allSpices().concat(dr ? dr.extra : []));
+        var src = dr ? dr.src : r && r.src ? r.src : '';
+        var steps = dr ? dr.steps : r && r.steps ? r.steps : [];
         var h = sheetHead(r ? '编辑菜谱' : '新建菜谱');
+        if (!r) h += noteBox(args);
         h += '<form class="ck-form" data-form="recipe" novalidate>' +
           '<label class="ck-label" for="ck-rn-' + id + '">菜名</label>' +
-          '<input class="ck-field" id="ck-rn-' + id + '" name="name" value="' + esc(r ? r.name : '') + '" autocomplete="off" placeholder="比如 酸辣土豆丝">' +
+          '<input class="ck-field" id="ck-rn-' + id + '" name="name" value="' + esc(dr ? dr.name : r ? r.name : '') + '" autocomplete="off" placeholder="比如 酸辣土豆丝">' +
           '<span class="ck-label">成品照片<small>可以不加</small></span><div class="ck-fphoto" data-fphoto>' + formPhotoInner() + '</div>' +
-          '<span class="ck-label">分类</span><div class="ck-opts" role="radiogroup" aria-label="分类">' + optList('cat', RCATS, r ? r.cat : '素菜') + '</div>' +
-          '<span class="ck-label">下面的用量是几人份</span><div class="ck-opts" role="radiogroup" aria-label="人份">' + optList('base', [1, 2, 3, 4], r ? r.base : 2, ['1 人', '2 人', '3 人', '4 人']) + '</div>' +
+          '<span class="ck-label">分类</span><div class="ck-opts" role="radiogroup" aria-label="分类">' + optList('cat', RCATS, dr ? dr.cat : r ? r.cat : '素菜') + '</div>' +
+          '<span class="ck-label">下面的用量是几人份</span><div class="ck-opts" role="radiogroup" aria-label="人份">' + optList('base', [1, 2, 3, 4], dr ? dr.base : r ? r.base : 2, ['1 人', '2 人', '3 人', '4 人']) + '</div>' +
           '<label class="ck-label" for="ck-rm-' + id + '">大约几分钟<small>可不填</small></label>' +
-          '<input class="ck-field" id="ck-rm-' + id + '" name="min" type="text" inputmode="numeric" value="' + esc(r && r.min ? r.min : '') + '" style="max-width:120px">' +
-          '<span class="ck-label">食材和用量</span>' +
+          '<input class="ck-field" id="ck-rm-' + id + '" name="min" type="text" inputmode="numeric" value="' + esc(dr && dr.min ? dr.min : (r && r.min ? r.min : '')) + '" style="max-width:120px">' +
+          '<span class="ck-label">食材和用量' + (dr && dr.items.some(function (x) { return x.note; }) ? '<small>标黄的请核对一下</small>' : '') + '</span>' +
           '<div data-rows>' + rows.map(function (it) { return ingRow(it.n || '', it.q === undefined ? '' : it.q, it.u, it.note); }).join('') + '</div>' +
           '<button type="button" class="ck-addrow" data-act="add-row">＋ 再加一样</button>' +
           '<span class="ck-label">要用的调料</span><div class="ck-opts">' + spList.map(function (s) {
@@ -676,16 +684,16 @@
 
       vision: function () {
         var c = visionCfg(), VA = window.CookVisionApi || {};
-        var h = sheetHead('识图设置');
-        h += '<p class="ck-note">拍照录入和拍小票需要一个能看图的 AI 接口。这里填你自己的接口和密钥，本项目不提供识别服务，也收不到你的照片和密钥。</p>';
+        var h = sheetHead('AI 接口设置');
+        h += '<p class="ck-note">拍照录入、拍小票、用 AI 整理菜谱都用这里的接口。填你自己的接口和密钥，本项目不提供 AI 服务，也收不到你的照片、文字和密钥。</p>';
         h += '<form class="ck-form" data-form="vision" novalidate>' +
           '<label class="ck-label" for="ck-vb-' + id + '">接口地址<small>OpenAI 兼容，不带 /chat/completions</small></label>' +
           '<input class="ck-field" id="ck-vb-' + id + '" name="base" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="' + esc(VA.DEFAULT_BASE || '') + '" value="' + esc(c.base || '') + '">' +
           '<label class="ck-label" for="ck-vk-' + id + '">API 密钥</label>' +
           '<input class="ck-field" id="ck-vk-' + id + '" name="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." value="' + esc(c.key || '') + '">' +
-          '<label class="ck-label" for="ck-vm-' + id + '">模型<small>要能看图</small></label>' +
+          '<label class="ck-label" for="ck-vm-' + id + '">模型<small>要能看图；只整理文字可以不看图</small></label>' +
           '<input class="ck-field" id="ck-vm-' + id + '" name="model" autocomplete="off" spellcheck="false" placeholder="' + esc(VA.DEFAULT_MODEL || '') + '" value="' + esc(c.model || '') + '">' +
-          '<p class="ck-note">密钥只存在这台设备的浏览器里，不会进备份。照片会从浏览器直接发到你填的接口。' +
+          '<p class="ck-note">密钥只存在这台设备的浏览器里，不会进备份。照片和文字会从浏览器直接发到你填的接口。' +
           '有的接口不允许浏览器直接调用，识别时会提示连不上，这时改用自己运行的 server.js 代为调用（见 README）。</p>' +
           '<p class="ck-err" role="alert"></p>' +
           '<div class="ck-form-foot">' + (c.key ? '<button type="button" class="ck-btn-text is-danger" data-act="vision-clear">清除设置</button>' : '') +
@@ -716,7 +724,7 @@
         h += '<div data-scan-rows>' + (lines.length ? lines.map(scanRow).join('') : '') + '</div>';
         h += '<button type="button" class="ck-addrow" data-act="scan-add">＋ 再加一样</button>';
         h += '<p class="ck-err" role="alert"></p>';
-        if (args.setup) h += '<p class="ck-scan-alt"><button type="button" class="ck-btn-text" data-act="vision-settings">识图设置</button></p>';
+        if (args.setup) h += '<p class="ck-scan-alt"><button type="button" class="ck-btn-text" data-act="vision-settings">AI 接口设置</button></p>';
         h += '<div class="ck-form-foot">' +
           '<button type="button" class="ck-btn-2" data-act="stock-photo" data-kind="' + esc(args.scanKind || 'stock') + '" data-src="' + esc(args.src || 'camera') + '">再拍一张</button>' +
           '<button type="submit" class="ck-btn">放进库存</button></div></form>';
@@ -758,6 +766,97 @@
       if (box) box.innerHTML = formPhotoInner();
     }
 
+    /* ---------- 用 AI 把菜谱文字 / 截图整理成菜谱（用户自己的接口） ---------- */
+
+    function noteBox(args) {
+      var dr = args.draft;
+      var flagged = dr ? dr.items.filter(function (x) { return x.note; }).length : 0;
+      var msg = args.impMsg || (dr ? '已整理：' + dr.items.length + ' 样食材、' + (dr.sp.length + dr.extra.length) + ' 样调料、' + dr.steps.length + ' 步做法。' +
+        (flagged ? '有 ' + flagged + ' 处标黄，保存前核对一下。' : '核对一下就可以保存。') : '');
+      return '<section class="ck-import" aria-label="用 AI 整理菜谱">' +
+        '<label class="ck-label" for="ck-imp-' + id + '">用 AI 整理菜谱<small>粘贴菜谱或笔记文字，也可以加截图</small></label>' +
+        '<textarea class="ck-field ck-imp" id="ck-imp-' + id + '" rows="3" placeholder="把菜谱、笔记的文字贴在这里，用料和做法混在一起也没关系">' + esc(args.impText || '') + '</textarea>' +
+        '<div class="ck-imp-shots" data-imp-shots>' + impShotsInner() + '</div>' +
+        '<div class="ck-imp-row"><button type="button" class="ck-btn ck-btn-sm" data-act="note-run">整理</button>' +
+        '<button type="button" class="ck-btn-text" data-act="note-shot">上传截图</button></div>' +
+        '<p class="ck-imp-msg' + (args.impErr ? ' is-err' : dr ? ' is-ok' : '') + '" role="status">' + esc(msg) + '</p>' +
+        (args.impSetup ? '<p class="ck-scan-alt"><button type="button" class="ck-btn-text" data-act="vision-settings">AI 接口设置</button></p>' : '') +
+        '</section>';
+    }
+    function impShotsInner() {
+      var shots = ui.impShots || [];
+      if (!shots.length) return '';
+      return '<p class="ck-imp-shot-lab">已选 ' + shots.length + ' 张截图（最多 4 张）</p><div class="ck-imp-shot-row">' + shots.map(function (ph, i) {
+        return '<span class="ck-imp-shot"><img src="' + esc(ph.thumb) + '" alt="截图' + (i + 1) + '"><button type="button" class="ck-x" data-act="note-shot-del" data-i="' + i + '" aria-label="去掉这张">×</button></span>';
+      }).join('') + '</div>';
+    }
+    function refreshImpShots() {
+      var box = sheetEl.querySelector('[data-imp-shots]');
+      if (box) box.innerHTML = impShotsInner();
+    }
+
+    function runNote(btn) {
+      var box = sheetEl.querySelector('.ck-import');
+      var text = box.querySelector('textarea').value.trim();
+      var msgEl = box.querySelector('.ck-imp-msg');
+      var shots = ui.impShots || [];
+      var gen = ui.noteGen;
+      function msg(t, cls) { msgEl.textContent = t; msgEl.className = 'ck-imp-msg' + (cls ? ' ' + cls : ''); }
+      function live() { return gen === ui.noteGen && ui.sheet && ui.sheet.kind === 'recipe-form'; }
+      function fail(t, setup) {
+        if (!live()) return;
+        if (setup) { openSheet('recipe-form', { impText: text, impMsg: t, impErr: true, impSetup: true }); return; }
+        msg(t, 'is-err');
+      }
+      if (!window.CookDraft || !window.CookVisionApi) { msg('没加载到整理功能：页面里要引入 core/recipe-draft.js 和 core/vision.js', 'is-err'); return; }
+      if (!text && !shots.length) { msg('先粘贴菜谱文字，或上传截图', 'is-err'); return; }
+      var urlM = text.match(/https?:\/\/[^\s"'<>，。、；！？）)】]+/);
+      var note = { title: '', text: text, source: urlM ? urlM[0] : '', images: shots.map(function (ph) { return ph.full; }).slice(0, 4) };
+      function apply(recipe) {
+        if (!live()) return;
+        var dr = window.CookDraft.fromNote(E, S, recipe);
+        if (!dr.items.length && !dr.steps.length) { msg('没认出用料和做法。把文字贴全一点，或换张清楚的截图', 'is-err'); return; }
+        openSheet('recipe-form', { draft: dr, impText: text });
+      }
+      var route = visionRoute();
+      if (!route) { fail(NOTE_SETUP, true); return; }
+      btn.disabled = true; btn.textContent = '整理中…'; msg('正在整理成菜谱…');
+      function doneBtn() { if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = '整理'; } }
+      var p;
+      if (route === 'direct') {
+        p = window.CookVisionApi.recipeFromNote(visionCfg(), note).then(apply, function (e) { fail((e && e.message) || '整理失败', true); });
+      } else {
+        p = fetch(recipeEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(note) })
+          .then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) { j = j || {}; j.status = r.status; return j; });
+          })
+          .then(function (j) {
+            if (j.ok && j.recipe) { apply(j.recipe); return; }
+            if (j.status === 503) { fail(NOTE_SETUP + '自己运行 server.js 的，也可以设置 VISION_API_KEY 后重启。', true); return; }
+            if (!j.error || j.status === 404 || j.status === 405) { fail(NOTE_SETUP, true); return; }
+            fail(j.error);
+          }, function () { fail(NOTE_SETUP, true); });
+      }
+      p.then(doneBtn, doneBtn);
+    }
+
+    function onNoteShots() {
+      var files = noteShotEl.files ? Array.prototype.slice.call(noteShotEl.files, 0) : [];
+      if (!files.length) return;
+      var room = 4 - (ui.impShots || []).length;
+      files.slice(0, Math.max(0, room)).reduce(function (p, file) {
+        return p.then(function () {
+          return compressPhoto(file).then(function (ph) {
+            ui.impShots = ui.impShots || [];
+            if (ui.impShots.length < 4) ui.impShots.push(ph);
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        refreshImpShots();
+        if (files.length > room) toast('最多 4 张截图，多的没加上');
+      }, function () { toast('有的截图读不了，换一张试试'); });
+    }
+
     function ingRow(name, q, unitHint, note) {
       var known = name && info(name);
       var u = known ? known.u : (unitHint && UNITS.indexOf(unitHint) >= 0 ? unitHint : '个');
@@ -796,7 +895,7 @@
 
     /* ---------- 识图接口（用户自己的） ---------- */
 
-    // 用户在「识图设置」里填的接口、密钥、模型，只存在这台设备的浏览器里，不进备份
+    // 用户在「AI 接口设置」里填的接口、密钥、模型，只存在这台设备的浏览器里，不进备份
     function visionCfg() {
       try { var t = window.localStorage.getItem(visionKey); var c = t ? JSON.parse(t) : null; return c && typeof c === 'object' ? c : {}; } catch (e) { return {}; }
     }
@@ -812,7 +911,8 @@
       if (opts.visionProxy || location.protocol !== 'file:') return 'proxy';
       return '';
     }
-    var NEED_SETUP = '还没设置识图接口。点下面的「识图设置」填你自己的 AI 接口和密钥，或者改用手加。';
+    var NEED_SETUP = '还没设置 AI 接口。点下面的「AI 接口设置」填你自己的接口和密钥，或者改用手加。';
+    var NOTE_SETUP = '还没设置 AI 接口。点下面的「AI 接口设置」填你自己的接口和密钥，或者在下面手动填写菜谱。';
 
     function recognizeStockPhoto(dataUrl, gen, scanKind) {
       var receipt = scanKind === 'receipt';
@@ -860,7 +960,7 @@
         // 没有代理（404/405）或代理没配密钥（503）时，引导用户去填自己的接口
         if (j.status === 503) { fail(NEED_SETUP + '自己运行 server.js 的，也可以设置 VISION_API_KEY 后重启。', true); return; }
         if (!j.error || j.status === 404 || j.status === 405) { fail(NEED_SETUP, true); return; }
-        fail(j.error + '。可以改用手加，或在「识图设置」里填你自己的接口。', true);
+        fail(j.error + '。可以改用手加，或在「AI 接口设置」里填你自己的接口。', true);
       }, function () { fail(NEED_SETUP, true); });
     }
 
@@ -1062,7 +1162,7 @@
           formErr(f, '接口地址要以 https:// 开头'); return;
         }
         if (!saveVisionCfg({ base: base, key: key, model: model })) { formErr(f, '这个浏览器存不了设置（可能是无痕模式）'); return; }
-        closeSheet(); render(); toast('识图设置已保存');
+        closeSheet(); render(); toast('AI 接口设置已保存');
       },
       'stock-scan': function (f) {
         var mode = radioVal(f, 'scan-mode') || (ui.sheet && ui.sheet.args.mode) || 'add';
@@ -1127,7 +1227,16 @@
         case 'sh-srv': ui.sheetServ = Math.min(12, Math.max(1, ui.sheetServ + d)); renderSheet(); break;
         case 'cook': cook(t.getAttribute('data-id')); break;
         case 'miss-to-shop': missToShop(t.getAttribute('data-id')); break;
-        case 'new-recipe': openSheet('recipe-form', {}); break;
+        case 'new-recipe': ui.impShots = []; openSheet('recipe-form', {}); break;
+        case 'note-run': runNote(t); break;
+        case 'note-shot':
+          if ((ui.impShots || []).length >= 4) { toast('最多 4 张截图'); break; }
+          noteShotEl.value = '';
+          noteShotEl.click();
+          break;
+        case 'note-shot-del':
+          if (ui.impShots && ui.impShots[i] !== undefined) { ui.impShots.splice(i, 1); refreshImpShots(); }
+          break;
         case 'photo-pick': ui.photoFor = t.getAttribute('data-id'); photoEl.value = ''; photoEl.click(); break;
         case 'stock-photo': pickStockPhoto(t.getAttribute('data-src') || 'camera', t.getAttribute('data-kind') || 'stock'); break;
         case 'scan-add': {
@@ -1146,7 +1255,7 @@
         }
         case 'vision-settings': openSheet('vision'); break;
         case 'vision-clear':
-          if (window.confirm('清除这台设备上保存的识图接口和密钥？')) { saveVisionCfg(null); closeSheet(); render(); toast('识图设置已清除'); }
+          if (window.confirm('清除这台设备上保存的识图接口和密钥？')) { saveVisionCfg(null); closeSheet(); render(); toast('AI 接口设置已清除'); }
           break;
         case 'fphoto-clear': ui.formPhoto = null; refreshFormPhoto(); break;
         case 'photo-del': {
@@ -1361,6 +1470,7 @@
     photoEl.addEventListener('change', onPhoto);
     stockCamEl.addEventListener('change', onStockFile);
     stockGalEl.addEventListener('change', onStockFile);
+    noteShotEl.addEventListener('change', onNoteShots);
     el.addEventListener('input', onInput);
     el.addEventListener('change', onInput);
     el.addEventListener('submit', onSubmit);
@@ -1432,7 +1542,8 @@
         nav: target.getAttribute('data-nav') || 'bottom',
         theme: target.getAttribute('data-theme') || 'auto',
         storageKey: target.getAttribute('data-storage-key') || undefined,
-        visionProxy: target.getAttribute('data-vision-proxy') || undefined
+        visionProxy: target.getAttribute('data-vision-proxy') || undefined,
+        recipeProxy: target.getAttribute('data-recipe-proxy') || undefined
       });
     }
   }

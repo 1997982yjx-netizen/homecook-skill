@@ -5,7 +5,7 @@
 它可以用两种方式使用：
 
 - **AI 助手的 skill**：装进 Codex、Claude Code 等支持 Agent Skills 的助手里，直接说"今天做什么菜""帮我记一下买了 4 个番茄""这是冰箱的照片"。不需要联网，也不需要任何 API 密钥。
-- **手机网页**：纯前端、没有依赖，打开 `index.html` 就能用，也可以嵌进你自己的页面。拍照识别库存要用你自己的 AI 接口（见下文）。
+- **手机网页**：纯前端、没有依赖，打开 `index.html` 就能用，也可以嵌进你自己的页面。拍照识别和 AI 整理菜谱要用你自己的 AI 接口（见下文）。
 
 两边的数据格式相同，可以互相导入导出。
 
@@ -17,6 +17,7 @@
 - **库存**：支持 克 / 两 / 斤 / 千克 换算，可以记到期日；常见叫法自动识别（西红柿记成番茄）。
 - **调料**：盐、生抽、葱姜蒜这类只记"有没有"，不记数量，做菜时也不扣。
 - **拍照录入 / 拍小票**：识别出的食材先给你核对，确认后才写入库存。
+- **用 AI 整理菜谱**：粘贴菜谱、笔记文字或上传截图，自动整理成菜名、用料、调料和做法，对照食材字典换算单位，核对后保存成自己的菜谱。
 - **做好了**：按人份从库存扣掉用掉的食材，网页上 6 秒内可以撤销。
 - **购物清单**：缺的食材一键加入，买到后放回库存。
 - **备份**：导出 / 导入 JSON。
@@ -39,6 +40,7 @@ git clone https://github.com/1997982yjx-netizen/homecook-skill ~/.claude/skills/
 
 - 数据默认存在 `~/.homecook/data.json`。想换位置，设置环境变量 `HOMECOOK_STATE`。
 - 发冰箱、台面照片或购物小票时，由助手自己看图，把结果交给 `import-items` 对照食材字典。助手会先把识别结果给你核对，你确认后才写入库存。
+- 贴菜谱文字、笔记或截图时，由助手自己整理成菜谱，交给 `recipe-import` 对照字典，核对后保存成你的菜谱。
 - 想和网页版同步：网页上「库存 → 导出备份」，然后让助手运行 `import 备份文件.json`；反过来用 `export`。
 
 ### 命令行
@@ -71,24 +73,24 @@ node server.js        # 默认端口 8080，PORT=3000 可以换端口
 
 启动后电脑上打开 `http://localhost:8080`。手机和电脑连同一个 Wi-Fi 时，用终端里打印的"手机访问"地址打开。
 
-### 拍照识别：用你自己的接口
+### 拍照识别和 AI 整理菜谱：用你自己的接口
 
-拍照录入和拍小票需要一个能看图的 AI 接口。**本项目不提供识别服务，也不会收到你的照片和密钥。** 有两种接法，任选一种。
+拍照录入、拍小票和「新建菜谱 → 用 AI 整理菜谱」需要一个 AI 接口。**本项目不提供 AI 服务，也不会收到你的照片、文字和密钥。** 有两种接法，任选一种。
 
 **接法一：在页面里填（最简单）**
 
-在「库存」页点「识图设置」，填三项：
+在「库存」页点「AI 接口设置」（新建菜谱里提示没设置时也能点进去），填三项：
 
 | 项 | 填什么 |
 | --- | --- |
 | 接口地址 | OpenAI 兼容接口的根路径，不带 `/chat/completions`。不填默认 `https://api.openai.com/v1` |
 | API 密钥 | 你自己的密钥 |
-| 模型 | 能看图的模型。不填默认 `gpt-4o-mini` |
+| 模型 | 能看图的模型（只整理文字时不看图的也行）。不填默认 `gpt-4o-mini` |
 
 只要接口是 OpenAI 兼容的 `/chat/completions`、支持图片输入，用哪家都可以。
 
-- 密钥只存在这台设备浏览器的本地存储里，不会进「导出备份」。在「识图设置」里可以随时清除。
-- 照片会从浏览器直接发到你填的接口。
+- 密钥只存在这台设备浏览器的本地存储里，不会进「导出备份」。在「AI 接口设置」里可以随时清除。
+- 照片和菜谱文字会从浏览器直接发到你填的接口。
 - 有的接口不允许浏览器直接调用（跨域）。这时识别会提示"连不上接口"，请改用接法二。
 - 别人能用到你这台设备的浏览器时，就能看到这个密钥。共用设备上请用接法二，或者用完清除。
 
@@ -108,13 +110,15 @@ VISION_API_KEY=你的密钥 node server.js
 | `VISION_TIMEOUT_MS` | `45000` | 超时毫秒 |
 | `VISION_ALLOW_ORIGIN` | （不允许跨域） | 页面和服务不在同一个网址时，填页面的来源，比如 `https://example.com` |
 
-页面在「识图设置」里没填密钥时，会自动改用同一网址下的 `/api/vision-stock`。
+页面在「AI 接口设置」里没填密钥时，会自动改用同一网址下的 `/api/vision-stock` 和 `/api/recipe-from-note`。
 
 接口：`POST /api/vision-stock`，JSON `{ "image": "data:image/jpeg;base64,...", "mode": "stock" | "receipt" }`。`mode` 默认 `stock`（台面 / 冰箱），`receipt` 是小票，只抽食材行。返回 `{ "ok": true, "mode", "items": [{ "name", "qty", "unit", "count", "weight_g", "note" }] }`。每个 IP 每分钟最多 8 次，请求体上限约 2 MB。页面会先把照片压到最长边 1000 像素再上传。
 
+菜谱整理：`POST /api/recipe-from-note`，JSON `{ "title", "text", "source", "images": ["data:image/jpeg;base64,..."] }`（截图最多 4 张）。返回 `{ "ok": true, "recipe": { "title", "category", "minutes", "serves", "ingredients": [{ "name", "amount" }], "seasonings", "optional", "steps", "source" } }`。和拍照识别共用环境变量和限额（每个 IP 每分钟合计 8 次）。
+
 **如果你把 server.js 部署到公网，任何能打开页面的人都会用你的密钥和额度。** 只在自己的设备或内网里运行，或者在前面加一层登录。
 
-没配置识图时，库存页原来的手动添加不受影响。
+没配置时，手动添加库存、手动填写菜谱都不受影响。
 
 ---
 
@@ -122,7 +126,7 @@ VISION_API_KEY=你的密钥 node server.js
 
 | | 在页面里新建 | 改 `recipes.js` |
 | --- | --- | --- |
-| 操作 | 「菜谱 → 新建菜谱」 | 改文件，提交到仓库 |
+| 操作 | 「菜谱 → 新建菜谱」，可以手填，也可以用 AI 整理 | 改文件，提交到仓库 |
 | 存在哪 | 只存在这台设备的浏览器里 | 跟着代码走，网页和 skill 都能用 |
 | 适合 | 临时加一两道自己的菜 | 长期保留、想分享的菜 |
 
@@ -198,7 +202,8 @@ node tools/check-recipes.js
 <script src="recipes.js"></script>          <!-- 数据 -->
 <script src="core/engine.js"></script>      <!-- 匹配引擎 -->
 <script src="core/vision-map.js"></script>  <!-- 拍照录入，不需要可以不引 -->
-<script src="core/vision.js"></script>      <!-- 拍照录入，不需要可以不引 -->
+<script src="core/recipe-draft.js"></script> <!-- AI 整理菜谱，不需要可以不引 -->
+<script src="core/vision.js"></script>      <!-- 拍照录入和 AI 整理菜谱，不需要可以不引 -->
 <script src="cook.js"></script>             <!-- 最后是页面脚本 -->
 ```
 
@@ -207,7 +212,10 @@ node tools/check-recipes.js
 - `data-nav="top"`：把模块的四个标签放到顶部。你的页面自己有底部导航时用这个，默认是 `bottom`。
 - `data-theme="light"` 或 `"dark"`：固定浅色或深色，默认跟随系统。
 - `data-storage-key="xxx"`：本地存储用的键名，默认 `cook-module-v1`。
-- `data-vision-proxy="/你的路径/vision-stock"`：识图代理的地址，默认 `/api/vision-stock`。你的后端把这个路径交给 `server/vision-proxy.js` 处理即可（见下）。
+- `data-vision-proxy="/你的路径/vision-stock"`：识图代理的地址，默认 `/api/vision-stock`。
+- `data-recipe-proxy="/你的路径/recipe-from-note"`：菜谱整理代理的地址，默认 `/api/recipe-from-note`。
+
+两个代理都由 `server/vision-proxy.js` 处理（见下）。
 
 ### 方式三：在 Vue / React 里手动挂载
 
@@ -234,23 +242,25 @@ useEffect(() => {
 | `storage` | 自定义存储 `{ load() { 返回数据或 null }, save(data) {} }`，想把数据存到自己后端时用 |
 | `onChange` | 数据每次变化时调用，参数是完整数据 |
 | `visionProxy` | 识图代理的地址，默认 `/api/vision-stock` |
+| `recipeProxy` | 菜谱整理代理的地址，默认 `/api/recipe-from-note` |
 
 `mount` 返回的对象有：`getData()`、`setData(data)`、`go('stock')`、`destroy()`。
 
 ### 你已经有 Node 后端时
 
-不用单独运行 `server.js`，把识图代理挂到你的后端上：
+不用单独运行 `server.js`，把代理挂到你的后端上：
 
 ```js
-const { handleVisionStock } = require('./homecook/server/vision-proxy');
+const { handleVisionStock, handleRecipeFromNote } = require('./homecook/server/vision-proxy');
 // 原生 http
 if (req.url.startsWith('/api/vision-stock')) return handleVisionStock(req, res);
+if (req.url.startsWith('/api/recipe-from-note')) return handleRecipeFromNote(req, res);
 // Express
-app.post('/api/vision-stock', handleVisionStock);
-app.options('/api/vision-stock', handleVisionStock);
+app.all('/api/vision-stock', handleVisionStock);
+app.all('/api/recipe-from-note', handleRecipeFromNote);
 ```
 
-路径可以随意起，挂载点上用 `data-vision-proxy` 指过去就行。
+路径可以随意起，挂载点上用 `data-vision-proxy`、`data-recipe-proxy` 指过去就行。
 
 ### 只用匹配引擎
 
@@ -309,7 +319,7 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 }
 ```
 
-库存数量的单位是固定的：论克的食材一律存克数，其他的按食材字典里的单位存。网页导出的备份还可能带 `photos`（成品照片），命令行会原样保留。识图设置不在里面。
+库存数量的单位是固定的：论克的食材一律存克数，其他的按食材字典里的单位存。网页导出的备份还可能带 `photos`（成品照片），命令行会原样保留。「AI 接口设置」不在里面。
 
 ## 目录
 
@@ -320,10 +330,11 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 | `recipes.js` | **数据**：食材字典、调料、常见叫法、菜谱。加菜只改这个文件 |
 | `core/engine.js` | 匹配引擎：库存、匹配、扣库存、购物清单，不依赖页面 |
 | `core/vision-map.js` | 把识图结果对照食材字典，换成库存用的名字和单位 |
-| `core/vision.js` | 调用你自己的识图接口（提示词、请求、结果清理） |
+| `core/recipe-draft.js` | 把 AI 整理出的菜谱对照食材字典，换算用量，变成可保存的草稿 |
+| `core/vision.js` | 调用你自己的 AI 接口（拍照识别、整理菜谱：提示词、请求、结果清理） |
 | `index.html` `cook.js` `cook.css` | 网页 |
 | `embed-example.html` | 嵌进别的页面的示例 |
-| `server.js` `server/vision-proxy.js` | 可选：本地服务和识图代理 |
+| `server.js` `server/vision-proxy.js` | 可选：本地服务和 AI 接口代理 |
 | `images/` | 内置菜谱的成品示意图（AI 生成） |
 | `tools/` | 菜谱检查和测试 |
 
@@ -332,6 +343,7 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 ```bash
 node tools/check-recipes.js
 node tools/test-engine.js
+node tools/test-draft.js
 node tools/test-cli.js
 node tools/test-vision.js
 ```

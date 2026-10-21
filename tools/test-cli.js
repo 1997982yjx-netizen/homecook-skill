@@ -67,6 +67,25 @@ try {
     assert.strictEqual(json('stock').find((x) => x.name === '土豆').qty, 3);
   });
 
+  test('整理好的菜谱先预览，--apply 才保存；能参与匹配，也能删掉', () => {
+    const rf = path.join(dir, 'recipe.json');
+    fs.writeFileSync(rf, JSON.stringify({ title: '土豆炖蛋', category: '蛋类', ingredients: [{ name: '土豆', amount: '1个' }, { name: '鸡蛋', amount: '两个' }], seasonings: ['盐'], steps: ['炖'] }));
+    const pre = json('recipe-import', rf);
+    assert.strictEqual(pre.applied, false);
+    assert.deepStrictEqual(pre.ingredients.map((x) => x.name + x.qty), ['土豆1', '鸡蛋2']);
+    assert.throws(() => run('recipe', '土豆炖蛋'), /没找到/);
+    assert.strictEqual(json('recipe-import', rf, '--apply').applied, true);
+    assert.ok(json('recipes').some((r) => r.name === '土豆炖蛋' && r.mine));
+    assert.ok(json('match').ok.some((d) => d.name === '土豆炖蛋'));
+    fs.writeFileSync(rf, JSON.stringify({ title: '番茄炒蛋', ingredients: [{ name: '番茄', amount: '1个' }] }));
+    assert.throws(() => run('recipe-import', rf), /内置菜谱/);
+    fs.writeFileSync(rf, JSON.stringify({ title: '缺用量', ingredients: [{ name: '五花肉', amount: '一块' }] }));
+    assert.throws(() => run('recipe-import', rf, '--apply'), /五花肉/);
+    run('recipe-remove', '土豆炖蛋');
+    assert.ok(!json('recipes').some((r) => r.name === '土豆炖蛋'));
+    assert.throws(() => run('recipe-remove', '番茄炒蛋'), /内置/);
+  });
+
   test('导出的文件就是网页备份格式，导入后数据一样', () => {
     const out = path.join(dir, 'backup.json');
     run('export', out);

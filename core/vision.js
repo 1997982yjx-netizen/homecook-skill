@@ -1,5 +1,5 @@
 /*
- * 拍照 / 小票识别：提示词、调用 OpenAI 兼容接口、清理模型返回。
+ * 拍照 / 小票识别、笔记整理成菜谱：提示词、调用 OpenAI 兼容接口、清理模型返回。
  * 浏览器里挂在 window.CookVisionApi，Node 里 require 也能用（server/vision-proxy.js 在用）。
  *
  * 用的是你自己的接口和密钥，本项目不提供任何识别服务。
@@ -7,6 +7,9 @@
  *
  *   CookVisionApi.recognize({ base, key, model, timeout }, dataUrl, 'stock' | 'receipt')
  *     → Promise<[{ name, qty, unit, count, weight_g, note }]>
+ *   CookVisionApi.recipeFromNote({ base, key, model }, { title, text, images: [dataUrl...] })
+ *     → Promise<{ title, category, minutes, serves, ingredients: [{ name, amount }], seasonings, optional, steps, source }>
+ *   只有文字时不需要模型能看图；带截图时要能看图。
  */
 (function (root, factory) {
   var api = factory();
@@ -52,6 +55,25 @@
     }
   };
 
+  var RECIPE_PROMPT = {
+    system: '你是家庭厨房助手，把随手记的菜谱、笔记或截图整理成家常菜谱。只根据给定文字和截图里实际出现的内容提取，不要编造看不到的步骤或用料。只输出 JSON，不要 markdown。',
+    user: [
+      '请从下面的内容里抽出一道能在家做的菜。内容可能很随意，用料和步骤可能混在一段话里，也可能只写在截图上。',
+      '输出 JSON 对象，字段：',
+      '- title: 菜名，去掉表情和营销词',
+      '- category: 只能是 荤菜 / 素菜 / 蛋类 / 汤 / 主食 之一',
+      '- minutes: 大约几分钟，看不出来则为 null',
+      '- serves: 1 到 4 的整数，默认 2',
+      '- ingredients: [{ "name": 食材中文名, "amount": 原文用量如"2个""150克""适量" }]，不要把调料放这里',
+      '- seasonings: 调料名数组，如 盐、生抽、葱、姜、蒜、食用油',
+      '- optional: 可选调料',
+      '- steps: 做法步骤字符串数组，一句一步，不要带"步骤1"',
+      '跳过清水。不是菜谱时 ingredients 和 steps 都给空数组。'
+    ].join('\n')
+  };
+  var RCATS = ['荤菜', '素菜', '蛋类', '汤', '主食'];
+  var MAX_NOTE_IMAGES = 4;
+
   function normalizeMode(m) {
     var s = String(m || '').trim().toLowerCase();
     return s === 'receipt' || s === 'ticket' || s === '小票' ? 'receipt' : 'stock';
@@ -94,6 +116,42 @@
     return out;
   }
 
+  function clipStr(v, n) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n); }
+
+  function sanitizeRecipe(raw, source) {
+    var src = raw && typeof raw === 'object' ? raw : {};
+    var cat = RCATS.indexOf(clipStr(src.category, 4)) >= 0 ? clipStr(src.category, 4) : '';
+    var minutes = Number(src.minutes), serves = Number(src.serves);
+    var ingredients = [], seen = {};
+    (Array.isArray(src.ingredients) ? src.ingredients : []).forEach(function (it) {
+      if (ingredients.length >= 40 || !it) return;
+      var name = clipStr(it.name, 20).replace(/\s+/g, '');
+      if (!name || seen[name]) return;
+      seen[name] = 1;
+      ingredients.push({ name: name, amount: clipStr(it.amount, 24) });
+    });
+    function names(list) {
+      var out = [];
+      (Array.isArray(list) ? list : []).forEach(function (x) {
+        var n = clipStr(x, 16).replace(/\s+/g, '');
+        if (n && out.indexOf(n) < 0 && out.length < 20) out.push(n);
+      });
+      return out;
+    }
+    var url = String(source || src.source || '').trim();
+    return {
+      title: clipStr(src.title, 40),
+      category: cat,
+      minutes: isFinite(minutes) && minutes > 0 ? Math.min(300, Math.round(minutes)) : 0,
+      serves: isFinite(serves) && serves >= 1 ? Math.min(4, Math.round(serves)) : 2,
+      ingredients: ingredients,
+      seasonings: names(src.seasonings),
+      optional: names(src.optional),
+      steps: (Array.isArray(src.steps) ? src.steps : []).map(function (x) { return clipStr(x, 120); }).filter(Boolean).slice(0, 40),
+      source: /^https?:\/\//i.test(url) ? url : ''
+    };
+  }
+
   // 补全配置：base 去掉末尾斜杠和误填的 /chat/completions
   function config(c) {
     c = c || {};
@@ -106,33 +164,40 @@
     };
   }
 
-  function buildRequest(cfg, dataUrl, mode) {
-    var p = promptForMode(mode);
+  function chatRequest(cfg, messages, maxTokens) {
     return {
       url: cfg.base + '/chat/completions',
       init: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.key },
-        body: JSON.stringify({
-          model: cfg.model,
-          temperature: 0.1,
-          max_tokens: 1200,
-          messages: [
-            { role: 'system', content: p.system },
-            { role: 'user', content: [{ type: 'text', text: p.user }, { type: 'image_url', image_url: { url: dataUrl } }] }
-          ]
-        })
+        body: JSON.stringify({ model: cfg.model, temperature: 0.1, max_tokens: maxTokens, messages: messages })
       }
     };
   }
 
-  // 调用接口并清理结果。fetchImpl 可替换（测试用）
-  function recognize(c, dataUrl, mode, fetchImpl) {
-    var cfg = config(c);
+  function buildRequest(cfg, dataUrl, mode) {
+    var p = promptForMode(mode);
+    return chatRequest(cfg, [
+      { role: 'system', content: p.system },
+      { role: 'user', content: [{ type: 'text', text: p.user }, { type: 'image_url', image_url: { url: dataUrl } }] }
+    ], 1200);
+  }
+
+  // note: { title, text, images: [dataUrl] }
+  function buildRecipeRequest(cfg, note) {
+    var images = (note.images || []).filter(function (x) { return /^data:image\//.test(String(x)); }).slice(0, MAX_NOTE_IMAGES);
+    var text = RECIPE_PROMPT.user + '\n\n标题：' + (clipStr(note.title, 40) || '（无）') + '\n原文：\n' + (String(note.text || '').trim().slice(0, 8000) || '（无文字，请看截图）');
+    var content = images.length
+      ? [{ type: 'text', text: text }].concat(images.map(function (u) { return { type: 'image_url', image_url: { url: u } }; }))
+      : text;
+    return chatRequest(cfg, [{ role: 'system', content: RECIPE_PROMPT.system }, { role: 'user', content: content }], 2500);
+  }
+
+  // 发请求、处理常见错误、读出模型返回的 JSON
+  function callChat(cfg, req, fetchImpl) {
     var doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     if (!cfg.key) return Promise.reject(fail(400, '还没填 API 密钥'));
     if (!doFetch) return Promise.reject(fail(500, '当前环境没有 fetch'));
-    var req = buildRequest(cfg, dataUrl, mode);
     var timer = null, ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     if (ctrl) { req.init.signal = ctrl.signal; timer = setTimeout(function () { ctrl.abort(); }, cfg.timeout); }
     return doFetch(req.url, req.init).then(function (r) {
@@ -147,19 +212,37 @@
           throw fail(502, msg ? '接口出错：' + msg : '接口出错（' + r.status + '）');
         }
         var content = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-        return sanitizeItems(parseModelJson(content));
+        return parseModelJson(content);
       });
     }, function (e) {
-      if (e && e.name === 'AbortError') throw fail(504, '识别超时，稍后再试');
+      if (e && e.name === 'AbortError') throw fail(504, '请求超时，稍后再试');
       if (e && e.status) throw e;
       // 浏览器里跨域被拦也会走到这里
       throw fail(502, '连不上接口。如果接口不允许浏览器直接调用（跨域），请改用 server.js 代为调用');
-    }).then(function (items) { if (timer) clearTimeout(timer); return items; }, function (e) { if (timer) clearTimeout(timer); throw e; });
+    }).then(function (v) { if (timer) clearTimeout(timer); return v; }, function (e) { if (timer) clearTimeout(timer); throw e; });
+  }
+
+  // 拍照 / 小票识别
+  function recognize(c, dataUrl, mode, fetchImpl) {
+    var cfg = config(c);
+    return callChat(cfg, buildRequest(cfg, dataUrl, mode), fetchImpl).then(sanitizeItems);
+  }
+
+  // 笔记文字 / 截图整理成菜谱
+  function recipeFromNote(c, note, fetchImpl) {
+    var cfg = config(c);
+    note = note || {};
+    if (!String(note.text || '').trim() && !(note.images || []).length && !String(note.title || '').trim()) {
+      return Promise.reject(fail(400, '请贴菜谱文字，或上传截图'));
+    }
+    return callChat(cfg, buildRecipeRequest(cfg, note), fetchImpl).then(function (raw) { return sanitizeRecipe(raw, note.source); });
   }
 
   return {
     DEFAULT_BASE: DEFAULT_BASE, DEFAULT_MODEL: DEFAULT_MODEL, PROMPTS: PROMPTS,
     normalizeMode: normalizeMode, promptForMode: promptForMode, parseModelJson: parseModelJson,
-    sanitizeItems: sanitizeItems, config: config, buildRequest: buildRequest, recognize: recognize
+    sanitizeItems: sanitizeItems, config: config, buildRequest: buildRequest, recognize: recognize,
+    RECIPE_PROMPT: RECIPE_PROMPT, MAX_NOTE_IMAGES: MAX_NOTE_IMAGES, sanitizeRecipe: sanitizeRecipe,
+    buildRecipeRequest: buildRecipeRequest, recipeFromNote: recipeFromNote
   };
 });

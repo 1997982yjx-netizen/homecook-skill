@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 const CookEngine = require('../core/engine.js');
 const CookVision = require('../core/vision-map.js');
+const CookDraft = require('../core/recipe-draft.js');
 const DATA = require('../recipes.js');
 
 const E = CookEngine.create(DATA);
@@ -342,6 +343,51 @@ const COMMANDS = {
     return { json, text };
   },
 
+  // 菜谱 JSON（AI 助手从文字、笔记或截图里整理出来的）对照字典变成"我的菜谱"；加 --apply 才保存
+  'recipe-import'(S, args, flags, ctx) {
+    const src = args[0];
+    if (!src) die('写法：recipe-import 菜谱.json（或 - 从标准输入读）[--apply]');
+    let raw;
+    try { raw = JSON.parse(src === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(path.resolve(src), 'utf8')); } catch (e) { die('菜谱不是有效的 JSON：' + e.message); }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) die('要是一个对象：{ title, category, minutes, serves, ingredients: [{ name, amount }], seasonings, optional, steps }');
+    const dr = CookDraft.fromNote(E, S, raw);
+    if (!dr.name) die('缺少菜名（title）');
+    const dup = E.findRecipe(S, dr.name);
+    const exact = dup && dup.name === dr.name ? dup : null;
+    if (exact && !exact.mine) die(`内置菜谱里已经有「${dr.name}」了，换个名字再导入`);
+    const json = {
+      applied: false, name: dr.name, category: dr.cat, serves: dr.base, minutes: dr.min || null,
+      ingredients: dr.items.map((x) => ({ name: x.n, qty: x.q === '' ? null : x.q, unit: x.u || E.unitOf(S, x.n), note: x.note || '' })),
+      seasonings: dr.sp.concat(dr.extra), newSeasonings: dr.extra, steps: dr.steps, replaces: exact ? exact.name : null
+    };
+    const lines = [`${dr.name}（${dr.cat}，${dr.base} 人份${dr.min ? '，约 ' + dr.min + ' 分钟' : ''}）`, '食材：'];
+    json.ingredients.forEach((x) => lines.push(`- ${x.name} ${x.qty === null ? '（用量待填）' : fmtQty(x.qty, x.unit)}${x.note ? '：' + x.note : ''}`));
+    lines.push('调料：' + (json.seasonings.join('、') || '（无）'));
+    if (dr.steps.length) { lines.push('做法：'); dr.steps.forEach((t, i) => lines.push(`${i + 1}. ${t}`)); }
+    if (flags.apply) {
+      const res = CookDraft.toRecipe(E, S, dr, exact ? exact.id : undefined);
+      if (res.error) die(res.error + '。在菜谱 JSON 里把用量写清楚（比如 "2个"、"300克"）后再导入');
+      const i = S.custom.recipes.findIndex((r) => r.id === res.recipe.id);
+      if (i >= 0) S.custom.recipes[i] = res.recipe; else S.custom.recipes.push(res.recipe);
+      ctx.dirty = true;
+      json.applied = true;
+      lines.push('', exact ? `已更新「${dr.name}」。` : `已保存为我的菜谱「${dr.name}」。`);
+    } else {
+      lines.push('', '还没保存。' + (json.ingredients.some((x) => x.note) ? '有标注的行请核对；' : '') + '确认后加 --apply 再运行一次。');
+    }
+    return { json, text: lines.join('\n') };
+  },
+
+  'recipe-remove'(S, args, flags, ctx) {
+    const name = args.join('');
+    const r = S.custom.recipes.find((x) => x.name === name);
+    if (!r) die(`「${name}」不是你自己加的菜谱（内置菜谱不能删）`);
+    S.custom.recipes = S.custom.recipes.filter((x) => x !== r);
+    delete S.log[r.id];
+    ctx.dirty = true;
+    return { json: { removed: name }, text: `已删除菜谱「${name}」。` };
+  },
+
   export(S, args, flags, ctx) {
     if (!args[0]) die('写法：export 文件.json');
     const out = path.resolve(args[0]);
@@ -386,6 +432,8 @@ const HELP = `homecook：按家里的库存算能做什么菜
   cook 番茄炒蛋 [--servings 3]          做好了：按人份扣库存
   shop / shop add 青椒 2 / shop missing 番茄炒蛋 / shop bought [名字…] / shop clear
   import-items 识图结果.json [--apply]  把看图识别出的食材对照字典；--apply 写入库存
+  recipe-import 菜谱.json [--apply]    把整理好的菜谱对照字典；--apply 保存为我的菜谱
+  recipe-remove 菜名                   删掉自己加的菜谱
   servings 3                          以后默认按几人份算
   export 文件.json / import 文件.json   和网页互相导入导出
 

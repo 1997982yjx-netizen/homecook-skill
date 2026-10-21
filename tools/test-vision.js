@@ -171,18 +171,18 @@ test('没有密钥时配置是空的', () => {
   }
 });
 
-function callHandler(method, body) {
+function callHandler(method, body, url, handler) {
   return new Promise((resolve) => {
     const req = Readable.from([Buffer.from(body || '')]);
     req.method = method;
-    req.url = '/api/vision-stock';
+    req.url = url || '/api/vision-stock';
     req.headers = { 'content-type': 'application/json' };
     req.socket = { remoteAddress: '127.0.0.1' };
     const res = {
       writeHead: function (status, headers) { this.status = status; this.headers = headers; },
       end: function (buf) { this.body = buf ? String(buf) : ''; resolve(this); }
     };
-    P.handleVisionStock(req, res);
+    (handler || P.handleVisionStock)(req, res);
   });
 }
 
@@ -206,6 +206,25 @@ async function extra() {
     await assert.rejects(A.recognize({ key: 'k' }, 'x', 'stock', () => Promise.reject(new TypeError('Failed to fetch'))), /server\.js/);
     n += 1;
     console.log('  ✓ 浏览器直连：成功、没密钥、密钥错、地址错、跨域被拦都有明确说明');
+  }
+  {
+    const seen = [];
+    const RECIPE_OK = { choices: [{ message: { content: JSON.stringify({ title: ' 番茄炒蛋 ', category: '蛋类', minutes: '10', serves: 9, ingredients: [{ name: '番茄', amount: '2个' }, { name: '番茄', amount: '1个' }, { name: '', amount: 'x' }], seasonings: ['盐', '盐', '糖'], steps: ['切', ' ', '炒'] }) } }] };
+    const r = await A.recipeFromNote({ key: 'k', base: 'https://example.com/v1' }, { text: '番茄两个 鸡蛋三个', images: ['data:image/jpeg;base64,xx', 'not-an-image'], source: 'https://example.com/n/1' }, fakeFetch(200, RECIPE_OK, seen));
+    assert.strictEqual(r.title, '番茄炒蛋');
+    assert.strictEqual(r.serves, 4);
+    assert.strictEqual(r.minutes, 10);
+    assert.deepStrictEqual(r.ingredients, [{ name: '番茄', amount: '2个' }]);
+    assert.deepStrictEqual(r.seasonings, ['盐', '糖']);
+    assert.deepStrictEqual(r.steps, ['切', '炒']);
+    assert.strictEqual(r.source, 'https://example.com/n/1');
+    const body = JSON.parse(seen[0].init.body);
+    assert.strictEqual(body.messages[1].content.filter((c) => c.type === 'image_url').length, 1, '只发合法的截图');
+    const textOnly = JSON.parse(A.buildRecipeRequest(A.config({ key: 'k' }), { text: '只有文字' }).init.body);
+    assert.strictEqual(typeof textOnly.messages[1].content, 'string', '只有文字时不带图片');
+    await assert.rejects(A.recipeFromNote({ key: 'k' }, {}, fakeFetch(200, RECIPE_OK)), /贴菜谱文字/);
+    n += 1;
+    console.log('  ✓ 菜谱整理：结果清理、只发合法截图、纯文字不带图、空内容会提示');
   }
   const prev = process.env.VISION_API_KEY;
   const prev2 = process.env.OPENAI_API_KEY;
@@ -236,6 +255,12 @@ async function extra() {
     assert.ok(!/server-key/.test(ok.body), '密钥不会回给页面');
     n += 1;
     console.log('  ✓ 代理用服务器环境变量里的密钥，密钥不会回给页面');
+    const note = await callHandler('POST', JSON.stringify({ text: '番茄炒蛋：番茄2个，鸡蛋3个' }), '/api/recipe-from-note', P.handleRecipeFromNote);
+    assert.strictEqual(note.status, 200);
+    const empty = await callHandler('POST', JSON.stringify({}), '/api/recipe-from-note', P.handleRecipeFromNote);
+    assert.strictEqual(empty.status, 400);
+    n += 1;
+    console.log('  ✓ 代理的菜谱整理接口可用，空内容返回 400');
     delete process.env.VISION_API_KEY;
   } finally {
     if (prev !== undefined) process.env.VISION_API_KEY = prev;
