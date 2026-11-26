@@ -27,7 +27,8 @@ const TYPES = {
 const PUBLIC = /^\/(index\.html|embed-example\.html|cook\.js|cook\.css|recipes\.js|core\/[\w.-]+\.js|images\/[^/]+)$/;
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); } catch (e) { res.writeHead(400); return res.end('Bad request'); }
   if (url.pathname === '/api/vision-stock') return handleVisionStock(req, res);
   if (url.pathname === '/api/recipe-from-note') return handleRecipeFromNote(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
@@ -36,12 +37,18 @@ const server = http.createServer((req, res) => {
   try { rel = decodeURIComponent(url.pathname); } catch (e) { res.writeHead(400); return res.end(); }
   if (rel === '/') rel = '/index.html';
   const file = path.normalize(path.join(ROOT, rel));
-  if (!PUBLIC.test(rel) || !file.startsWith(ROOT + path.sep) || !TYPES[path.extname(file)]) { res.writeHead(404); return res.end('Not found'); }
+  const ext = path.extname(file).toLowerCase();
+  if (!PUBLIC.test(rel) || !file.startsWith(ROOT + path.sep) || !TYPES[ext]) { res.writeHead(404); return res.end('Not found'); }
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)], 'Cache-Control': 'no-cache' });
+    res.writeHead(200, { 'Content-Type': TYPES[ext], 'Cache-Control': 'no-cache' });
     res.end(req.method === 'HEAD' ? undefined : buf);
   });
+});
+
+server.on('error', (err) => {
+  console.error(err.code === 'EADDRINUSE' ? `端口 ${PORT} 已被占用，可以用 PORT=其他端口 node server.js` : `服务启动失败：${err.message}`);
+  process.exit(1);
 });
 
 server.listen(PORT, () => {

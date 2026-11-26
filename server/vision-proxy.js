@@ -48,6 +48,7 @@ function limited(ip) {
 
 function send(res, status, body) {
   const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+  if (status === 413) headers.Connection = 'close';
   const origin = (process.env.VISION_ALLOW_ORIGIN || '').trim();
   if (origin) {
     headers['Access-Control-Allow-Origin'] = origin;
@@ -69,14 +70,15 @@ function readBody(req, max) {
       n += c.length;
       if (n > max) {
         stopped = true;
+        chunks.length = 0;
         reject(fail(413, '图片太大，请换一张或压缩后再试'));
-        req.destroy();
+        if (typeof req.resume === 'function') req.resume();
         return;
       }
       chunks.push(c);
     });
     req.on('end', () => { if (!stopped) resolve(Buffer.concat(chunks)); });
-    req.on('error', reject);
+    req.on('error', (e) => { if (!stopped) reject(e); });
   });
 }
 
@@ -86,12 +88,18 @@ function parseDataUrl(image) {
   return m ? { mime: m[1].toLowerCase(), b64: m[2].replace(/\s+/g, '') } : null;
 }
 
-function parseVisionBody(buf) {
+function parseJsonObject(buf) {
   let obj;
   try { obj = JSON.parse(buf.toString('utf8') || '{}'); } catch (e) { throw fail(400, '请求不是 JSON'); }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw fail(400, '请求体要是 JSON 对象');
+  return obj;
+}
+
+function parseVisionBody(buf) {
+  const obj = parseJsonObject(buf);
   const parsed = parseDataUrl(obj.image);
   if (!parsed) throw fail(400, '请把照片以 data URL 放在 image 字段里');
-  if (!ALLOW_MIME[parsed.mime]) throw fail(400, '只接受 jpeg / png / webp 图片');
+  if (!ALLOW_MIME[parsed.mime]) throw fail(400, '只接受 jpeg / png / webp / gif 图片');
   const bytes = Buffer.from(parsed.b64, 'base64');
   if (!bytes.length) throw fail(400, '图片是空的');
   if (bytes.length > MAX_IMAGE) throw fail(413, '图片太大，请换一张或压缩后再试');
@@ -100,20 +108,24 @@ function parseVisionBody(buf) {
 }
 
 function parseNoteBody(buf) {
-  let obj;
-  try { obj = JSON.parse(buf.toString('utf8') || '{}'); } catch (e) { throw fail(400, '请求不是 JSON'); }
+  const obj = parseJsonObject(buf);
   const images = [];
-  const raw = Array.isArray(obj.images) ? obj.images : [];
+  const raw = Array.isArray(obj.images) ? obj.images.slice(0, 20) : [];
   for (let i = 0; i < raw.length && images.length < V.MAX_NOTE_IMAGES; i++) {
     const parsed = parseDataUrl(raw[i]);
     if (!parsed) continue;
-    if (!ALLOW_MIME[parsed.mime]) throw fail(400, '只接受 jpeg / png / webp 图片');
+    if (!ALLOW_MIME[parsed.mime]) throw fail(400, '只接受 jpeg / png / webp / gif 图片');
     const bytes = Buffer.from(parsed.b64, 'base64');
     if (!bytes.length) continue;
     if (bytes.length > MAX_IMAGE) throw fail(413, '图片太大，请换一张或压缩后再试');
     images.push('data:' + (parsed.mime === 'image/jpg' ? 'image/jpeg' : parsed.mime) + ';base64,' + parsed.b64);
   }
-  const note = { title: String(obj.title || '').slice(0, 80), text: String(obj.text || '').slice(0, 8000), source: String(obj.source || ''), images };
+  const note = {
+    title: typeof obj.title === 'string' ? obj.title.slice(0, 80) : '',
+    text: typeof obj.text === 'string' ? obj.text.slice(0, 8000) : '',
+    source: typeof obj.source === 'string' ? obj.source : '',
+    images
+  };
   if (!note.text.trim() && !note.title.trim() && !images.length) throw fail(400, '请贴菜谱文字，或上传截图');
   return note;
 }
@@ -139,13 +151,14 @@ async function handleVisionStock(req, res) {
   }
 }
 
-// 共同的前置检查：方法、限额、密钥。没问题返回配置，否则已经回复了错误、返回 null
+// 共同的前置检查：方法、密钥、限额。没问题返回配置，否则已经回复了错误、返回 null
 function guard(req, res) {
   if (req.method === 'OPTIONS') { send(res, 204, {}); return null; }
   if (req.method !== 'POST') { send(res, 405, { ok: false, error: '只支持 POST' }); return null; }
-  if (limited(req.socket.remoteAddress || '')) { send(res, 429, { ok: false, error: '请求太频繁，等一分钟再试' }); return null; }
   const cfg = apiConfig();
   if (!cfg.key) { send(res, 503, { ok: false, error: '服务器还没配置识图：设置环境变量 VISION_API_KEY 后重启（见 README）' }); return null; }
+  const ip = (req.socket && req.socket.remoteAddress) || '';
+  if (limited(ip)) { send(res, 429, { ok: false, error: '请求太频繁，等一分钟再试' }); return null; }
   return cfg;
 }
 

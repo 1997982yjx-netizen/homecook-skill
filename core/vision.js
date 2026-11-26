@@ -155,12 +155,13 @@
   // 补全配置：base 去掉末尾斜杠和误填的 /chat/completions
   function config(c) {
     c = c || {};
-    var base = String(c.base || DEFAULT_BASE).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+    var base = String(c.base || DEFAULT_BASE).trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
+    var t = +c.timeout;
     return {
       base: base,
       key: String(c.key || '').trim(),
       model: String(c.model || DEFAULT_MODEL).trim(),
-      timeout: +c.timeout || 45000
+      timeout: isFinite(t) && t > 0 ? t : 45000
     };
   }
 
@@ -212,9 +213,12 @@
           throw fail(502, msg ? '接口出错：' + msg : '接口出错（' + r.status + '）');
         }
         var content = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+        if (Array.isArray(content)) {
+          content = content.map(function (p) { return p && typeof p.text === 'string' ? p.text : ''; }).join('\n');
+        }
         return parseModelJson(content);
       });
-    }, function (e) {
+    }).catch(function (e) {
       if (e && e.name === 'AbortError') throw fail(504, '请求超时，稍后再试');
       if (e && e.status) throw e;
       // 浏览器里跨域被拦也会走到这里

@@ -31,7 +31,9 @@
   function addDays(n, now) { var d = day0(now); d.setDate(d.getDate() + n); return ymd(d); }
   function parseYmd(s) {
     if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-    var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]);
+    var p = s.split('-'), y = +p[0], m = +p[1], day = +p[2];
+    var d = new Date(y, m - 1, day);
+    return d.getFullYear() === y && d.getMonth() === m - 1 && d.getDate() === day ? d : null;
   }
   function daysLeft(exp, now) { var d = parseYmd(exp); return d ? Math.round((d - day0(now)) / DAY) : null; }
   // 按人数换算用量：计数单位向上取整，克/毫升取到 5 的倍数
@@ -87,20 +89,71 @@
     function normalize(d) {
       var b = blank();
       if (!d || typeof d !== 'object') return b;
-      if (d.stock && typeof d.stock === 'object') {
+      if (d.stock && typeof d.stock === 'object' && !Array.isArray(d.stock)) {
         Object.keys(d.stock).forEach(function (k) {
           var s = d.stock[k];
-          if (s && typeof s.qty === 'number' && s.qty > 0) b.stock[k] = { qty: s.qty, exp: parseYmd(s.exp) ? s.exp : null, at: s.at || Date.now() };
+          if (s && typeof s === 'object' && typeof s.qty === 'number' && isFinite(s.qty) && s.qty > 0) {
+            b.stock[k] = {
+              qty: s.qty,
+              exp: parseYmd(s.exp) ? s.exp : null,
+              at: typeof s.at === 'number' && isFinite(s.at) ? s.at : Date.now()
+            };
+          }
         });
       }
-      if (Array.isArray(d.spices)) b.spices = d.spices.filter(function (x) { return typeof x === 'string'; });
-      if (d.custom && typeof d.custom === 'object') {
-        if (d.custom.ing && typeof d.custom.ing === 'object') b.custom.ing = d.custom.ing;
-        if (Array.isArray(d.custom.recipes)) b.custom.recipes = d.custom.recipes.filter(function (r) { return r && r.id && r.name && r.items; });
+      if (Array.isArray(d.spices)) {
+        b.spices = uniq(d.spices.filter(function (x) { return typeof x === 'string' && x.trim(); }));
       }
-      if (Array.isArray(d.shop)) b.shop = d.shop.filter(function (x) { return x && x.n; });
-      if (d.log && typeof d.log === 'object') b.log = d.log;
-      if (d.servings >= 1 && d.servings <= 12) b.servings = Math.round(d.servings);
+      if (d.custom && typeof d.custom === 'object') {
+        if (d.custom.ing && typeof d.custom.ing === 'object' && !Array.isArray(d.custom.ing)) {
+          Object.keys(d.custom.ing).forEach(function (k) {
+            var v = d.custom.ing[k];
+            if (!v || typeof v !== 'object') return;
+            var c = typeof v.c === 'string' && v.c ? v.c : '其他';
+            var u = c === '调料' ? '' : (typeof v.u === 'string' && v.u ? v.u : '个');
+            b.custom.ing[k] = { u: u, c: c };
+          });
+        }
+        if (Array.isArray(d.custom.recipes)) {
+          b.custom.recipes = d.custom.recipes.filter(function (r) {
+            return r && typeof r === 'object' && typeof r.id === 'string' && r.id && typeof r.name === 'string' && r.name &&
+              r.items && typeof r.items === 'object' && !Array.isArray(r.items);
+          }).map(function (r) {
+            var items = {};
+            Object.keys(r.items).forEach(function (k) {
+              var q = Number(r.items[k]);
+              if (isFinite(q) && q > 0) items[k] = q;
+            });
+            return {
+              id: r.id,
+              name: r.name,
+              cat: typeof r.cat === 'string' && r.cat ? r.cat : '素菜',
+              base: typeof r.base === 'number' && isFinite(r.base) && r.base >= 1 ? Math.round(r.base) : 2,
+              min: typeof r.min === 'number' && isFinite(r.min) && r.min > 0 ? Math.round(r.min) : 0,
+              items: items,
+              s: Array.isArray(r.s) ? r.s.filter(function (x) { return typeof x === 'string' && x; }) : [],
+              o: Array.isArray(r.o) ? r.o.filter(function (x) { return typeof x === 'string' && x; }) : [],
+              steps: Array.isArray(r.steps) ? r.steps.filter(function (x) { return typeof x === 'string' && x; }) : [],
+              img: typeof r.img === 'string' ? r.img : '',
+              src: typeof r.src === 'string' ? r.src : '',
+              mine: true
+            };
+          });
+        }
+      }
+      if (Array.isArray(d.shop)) {
+        b.shop = d.shop.filter(function (x) { return x && typeof x === 'object' && typeof x.n === 'string' && x.n; }).map(function (x) {
+          var u = typeof x.u === 'string' ? x.u : '';
+          var q = typeof x.q === 'number' && isFinite(x.q) && x.q >= 0 ? x.q : 0;
+          return { n: x.n, q: u ? q : 0, u: u, done: !!x.done };
+        });
+      }
+      if (d.log && typeof d.log === 'object' && !Array.isArray(d.log)) {
+        Object.keys(d.log).forEach(function (k) {
+          if (typeof d.log[k] === 'number' && isFinite(d.log[k])) b.log[k] = d.log[k];
+        });
+      }
+      if (typeof d.servings === 'number' && isFinite(d.servings) && d.servings >= 1 && d.servings <= 12) b.servings = Math.round(d.servings);
       return b;
     }
 
@@ -121,11 +174,11 @@
       return ALIAS[s] && !S.custom.ing[s] ? ALIAS[s] : s;
     }
     function allSpices(S) {
-      return SPICES.concat(Object.keys(S.custom.ing).filter(function (k) { return S.custom.ing[k].c === '调料'; }));
+      return SPICES.concat(Object.keys(S.custom.ing).filter(function (k) { return S.custom.ing[k] && S.custom.ing[k].c === '调料'; }));
     }
     function allNames(S) { return uniq(Object.keys(ING).concat(SPICES, Object.keys(S.custom.ing))); }
     function allRecipes(S) {
-      return RECIPES.concat(S.custom.recipes.map(function (r) { r.mine = true; return r; }));
+      return RECIPES.concat(S.custom.recipes.map(function (r) { return r.mine ? r : Object.assign({}, r, { mine: true }); }));
     }
     // 按 id 或菜名找；菜名完全相同优先，其次包含
     function findRecipe(S, key) {

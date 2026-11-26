@@ -94,4 +94,27 @@ test('用量缺了不能保存，会说哪一样', () => {
   assert.ok(/五花肉/.test(D.toRecipe(E, s, dr).error));
 });
 
+test('边界校验：除零/零值拒绝、中文波浪号范围、调料子串匹配、失败不污染字典', () => {
+  assert.strictEqual(D.parseAmount('1/0个').kind, 'none');
+  assert.strictEqual(D.parseAmount('0个').kind, 'none');
+  assert.deepStrictEqual([D.parseAmount('三~四个').num, D.parseAmount('三~四个').unit], [3, '个']);
+  assert.deepStrictEqual([D.parseAmount('两～三根').num, D.parseAmount('两～三根').unit], [2, '根']);
+
+  const s = S();
+  s.custom.ing['杏鲍菇'] = { u: '克', c: '蔬菜' };
+  assert.deepStrictEqual(D.matchName(E, s, '特级生抽'), { name: '生抽', known: true });
+  assert.deepStrictEqual(D.matchName(E, s, '有机杏鲍菇'), { name: '杏鲍菇', known: true });
+
+  const merged = D.fromNote(E, s, {
+    title: '蛋饼',
+    ingredients: [{ name: '鸡蛋', amount: '适量' }, { name: '蛋液', amount: '2个' }]
+  });
+  assert.strictEqual(merged.items[0].q, 2);
+
+  const s2 = S();
+  const badDr = { name: '测试', cat: '素菜', base: 2, min: 0, items: [{ n: '新食材甲', q: 2, u: '个' }, { n: '新食材乙', q: '' }], sp: [], extra: [], steps: [] };
+  assert.ok(D.toRecipe(E, s2, badDr).error);
+  assert.strictEqual(s2.custom.ing['新食材甲'], undefined, '校验失败不能污染自定义字典');
+});
+
 console.log(`\n${n} 项测试全部通过。`);

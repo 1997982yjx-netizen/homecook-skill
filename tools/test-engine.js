@@ -142,17 +142,28 @@ test('累加库存时到期日取更早的', () => {
 
 test('页面导出的备份可以直接读（多余字段忽略，坏数据丢掉）', () => {
   const S = E.normalize({
-    v: 1, stock: { '番茄': { qty: 4, exp: '2026-10-21', at: 1 }, '坏的': { qty: -1 } },
-    spices: ['盐', 3], custom: { ing: {}, recipes: [{ id: 'u1', name: '我的菜', items: { '番茄': 1 } }, { name: '缺 id' }] },
-    shop: [{ n: '青椒', q: 2, u: '个', done: false }, {}], log: {}, servings: 99, photos: { x: 1 }
+    v: 1, stock: { '番茄': { qty: 4, exp: '2026-10-21', at: 1 }, '坏的': { qty: -1 }, '无穷': { qty: Infinity }, '错日期': { qty: 2, exp: '2026-02-31' } },
+    spices: ['盐', '盐', '', 3], custom: { ing: { '坏食材': null, '秋葵': { u: '根', c: '蔬菜' } }, recipes: [{ id: 'u1', name: '我的菜', items: { '番茄': 1 } }, { name: '缺 id' }, { id: 'u2', name: '坏items', items: [] }] },
+    shop: [{ n: '青椒', q: 2, u: '个', done: false }, {}], log: { 'r:番茄炒蛋': 123, bad: 'x' }, servings: 99, photos: { x: 1 }
   });
-  assert.deepStrictEqual(Object.keys(S.stock), ['番茄']);
+  assert.deepStrictEqual(Object.keys(S.stock).sort(), ['番茄', '错日期'].sort());
+  assert.strictEqual(S.stock['错日期'].exp, null);
   assert.deepStrictEqual(S.spices, ['盐']);
+  assert.ok(!S.custom.ing['坏食材']);
+  assert.ok(Array.isArray(E.allSpices(S)));
   assert.strictEqual(S.custom.recipes.length, 1);
+  assert.deepStrictEqual(S.custom.recipes[0].steps, []);
   assert.strictEqual(S.shop.length, 1);
   assert.strictEqual(S.servings, 2);
   assert.ok(!('photos' in S));
   assert.ok(E.findRecipe(S, '我的菜').mine);
+});
+
+test('parseYmd 拒绝不存在的日历日期', () => {
+  assert.strictEqual(CookEngine.parseYmd('2026-02-31'), null);
+  assert.strictEqual(CookEngine.parseYmd('2026-13-45'), null);
+  assert.strictEqual(CookEngine.parseYmd('2024-02-29').getDate(), 29);
+  assert.strictEqual(CookEngine.parseYmd('2026-02-29'), null);
 });
 
 console.log(`\n${n} 项测试全部通过。`);
