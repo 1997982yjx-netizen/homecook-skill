@@ -61,6 +61,19 @@ Object.keys(alias).forEach((a) => {
   if (!ing[t] && !seasonings.includes(t)) err(`别名「${a}」`, `指向的「${t}」既不在食材字典也不在调料里`);
 });
 
+// 替代食材与推荐保质期
+Object.keys(data.substitutes || {}).forEach((name) => {
+  if (!ing[name] && !seasonings.includes(name)) warn(`替代食材「${name}」`, '不在食材字典里');
+  const list = data.substitutes[name];
+  if (!Array.isArray(list)) { err(`替代食材「${name}」`, '要写成数组'); return; }
+  list.forEach((x) => { if (typeof x !== 'string' || !x) err(`替代食材「${name}」`, '替代品要写成名称'); });
+});
+Object.keys(data.shelfLife || {}).forEach((name) => {
+  const d = data.shelfLife[name];
+  if (!(typeof d === 'number' && d > 0)) err(`保质期「${name}」`, '要写成大于 0 的天数');
+  else if (!ing[name] && !seasonings.includes(name)) warn(`保质期「${name}」`, '不在食材字典里');
+});
+
 // 菜谱
 const recipes = Array.isArray(data.recipes) ? data.recipes : [];
 if (!Array.isArray(data.recipes)) err('recipes', '要写成数组 [ { ... }, { ... } ]');
@@ -75,6 +88,10 @@ recipes.forEach((r, i) => {
   if (!RECIPE_CATS.includes(r.category)) err(where, `category 要是 ${RECIPE_CATS.join(' / ')} 之一，现在是「${r.category}」`);
   if (r.serves !== undefined && !(Number.isInteger(r.serves) && r.serves >= 1 && r.serves <= 12)) err(where, 'serves（几人份）要是 1 到 12 的整数');
   if (r.minutes !== undefined && !(typeof r.minutes === 'number' && r.minutes >= 0)) err(where, 'minutes 要是数字');
+  ['prepMinutes', 'cookMinutes'].forEach((k) => {
+    if (r[k] !== undefined && !(typeof r[k] === 'number' && r[k] >= 0)) err(where, `${k} 要是数字`);
+  });
+  if (r.tags !== undefined && (!Array.isArray(r.tags) || r.tags.some((t) => typeof t !== 'string' || !t))) err(where, "tags 要写成字符串数组，比如 ['快手', '不辣']");
 
   const items = r.ingredients || {};
   if (typeof items !== 'object' || Array.isArray(items)) { err(where, "ingredients 要写成 { '食材': 用量 }"); return; }

@@ -40,6 +40,11 @@
   function r2(n) { return Math.round(n * 100) / 100; }
   function fmtNum(n) { var v = Math.round(n * 10) / 10; return v % 1 === 0 ? String(v) : v.toFixed(1); }
   function fmtQty(q, u) { return fmtNum(q) + (u || ''); }
+  function fmtDur(sec) {
+    if (sec >= 3600 && sec % 3600 === 0) return (sec / 3600) + ' 小时';
+    if (sec >= 60) return Math.round(sec / 60) + ' 分钟';
+    return sec + ' 秒';
+  }
   function pad(n) { return n < 10 ? '0' + n : String(n); }
   function today0() { var d = new Date(); d.setHours(0, 0, 0, 0); return d; }
   function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -52,6 +57,7 @@
     return d.getFullYear() === y && d.getMonth() === m - 1 && d.getDate() === day ? d : null;
   }
   function parsePosNum(v) {
+    if (window.CookWeb && window.CookWeb.parsePosNum) return window.CookWeb.parsePosNum(v);
     var s = String(v == null ? '' : v).trim()
       .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
       .replace(/．/g, '.');
@@ -99,6 +105,7 @@
     shop: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 8h13l-1.2 12h-10.6L5.5 8Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/></svg>'
   };
   var TABS = [['match', '能做啥'], ['stock', '库存'], ['recipes', '菜谱'], ['shop', '清单']];
+  var TAGS = ['快手', '不辣', '免油烟', '少油低脂'];
 
   /* ================= 成品照片 ================= */
 
@@ -197,8 +204,8 @@
     var id = ++seq;
     var store = makeStore(opts);
     var S = E.normalize(store.load());
-    var ui = { photoFor: null, formPhoto: null, impShots: [], noteGen: 0, quickOpen: false, tab: opts.tab || 'match', rendered: null, filter: '全部', rfilter: '全部', showFar: false, q: '', rq: '', sheet: null, sheetServ: 2, opener: null, scanGen: 0, scanKind: 'stock' };
-    var toastTimer = null, toastFn = null, cleanups = [], destroyed = false;
+    var ui = { photoFor: null, formPhoto: null, impShots: [], noteGen: 0, quickOpen: false, tab: opts.tab || 'match', rendered: null, filter: '全部', rfilter: '全部', showFar: false, q: '', rq: '', sheet: null, sheetServ: 2, opener: null, scanGen: 0, scanKind: 'stock', mealDishes: 2, mealSoup: 1, tag: '' };
+    var toastTimer = null, toastFn = null, cleanups = [], destroyed = false, timers = [];
 
     el.classList.add('ck');
     el.setAttribute('data-nav', opts.nav === 'top' ? 'top' : 'bottom');
@@ -256,6 +263,7 @@
     function allRecipes() { return E.allRecipes(S); }
     function findRecipe(rid) { return allRecipes().filter(function (r) { return r.id === rid; })[0]; }
     function analyze(r, n) { return E.analyze(S, r, n); }
+    function tagsOf(r) { return E.tagsOf(S, r); }
     function score(a) { return E.score(S, a); }
     function missText(a, limit) {
       var parts = a.miss.map(function (m) { return m.n + ' ' + fmtQty(m.q, m.u); }).concat(a.missSp);
@@ -322,6 +330,7 @@
         if (a.status === 'near' && !a.missSp.length && a.max >= 1) meta += '<span class="ck-muted-t">，够 ' + a.max + ' 人份</span>';
       }
       if (a.exp.length) note = '<span class="ck-dish-note">能用掉快过期的' + esc(a.exp.join('、')) + '</span>';
+      if (a.expired && a.expired.length) note += '<span class="ck-miss-t" style="font-size:12px">' + esc(a.expired.join('、')) + '已过期，建议检查丢弃</span>';
       return '<button type="button" class="ck-dish" data-act="recipe" data-id="' + esc(r.id) + '">' +
         (dot ? '<i class="ck-dot is-' + a.status + '" aria-hidden="true"></i>' : '') + thumb(r) +
         '<span class="ck-dish-main"><span class="ck-dish-name">' + esc(r.name) + (r.mine ? '<em class="ck-mine">我的</em>' : '') + '</span>' +
@@ -347,6 +356,7 @@
           var okAll = all.filter(function (a) { return a.status === 'ok'; });
           var nearAll = all.filter(function (a) { return a.status === 'near'; });
           var list = ui.filter === '全部' ? all : all.filter(function (a) { return a.r.cat === ui.filter; });
+          if (ui.tag) list = list.filter(function (a) { return tagsOf(a.r).indexOf(ui.tag) >= 0; });
           var ok = list.filter(function (a) { return a.status === 'ok'; }).sort(function (x, y) { return score(y) - score(x); });
           var near = list.filter(function (a) { return a.status === 'near'; }).sort(function (x, y) { return x.mc - y.mc || score(y) - score(x); });
           var far = list.filter(function (a) { return a.status === 'far'; }).sort(function (x, y) { return x.mc - y.mc; });
@@ -358,6 +368,8 @@
             (expiring.length ? '<p class="ck-plate-warn">快过期：' + esc(expiring.join('、')) + '。用得上它们的菜排在前面。</p>' : '') +
             '</section>';
           h += chips(RCATS, ui.filter, 'filter');
+          h += chips(TAGS, ui.tag, 'tagfilter');
+          h += '<div class="ck-btns" style="margin:8px 0 4px"><button type="button" class="ck-btn-2" data-act="meal">帮我凑一顿</button></div>';
 
           h += '<h2 class="ck-sec"><span>现在就能做</span><small>' + ok.length + ' 道</small></h2>';
           h += ok.length ? '<div class="ck-panel">' + ok.map(function (a) { return dishRow(a); }).join('') + '</div>'
@@ -445,13 +457,7 @@
             '<div class="ck-search"><input class="ck-field" type="search" placeholder="搜菜名或食材" autocomplete="off" data-input="recipe-q" aria-label="搜索菜谱"></div>';
         },
         body: function () {
-          var q = ui.rq;
-          var list = allRecipes().filter(function (r) {
-            if (ui.rfilter !== '全部' && r.cat !== ui.rfilter) return false;
-            if (!q) return true;
-            var nq = normName(q);
-            return r.name.indexOf(q) >= 0 || Object.keys(r.items).some(function (k) { return k.indexOf(nq) >= 0 || k.indexOf(q) >= 0; });
-          }).map(function (r) { return analyze(r, S.servings); });
+          var list = E.searchRecipes(S, { q: ui.rq, category: ui.rfilter }).map(function (r) { return analyze(r, S.servings); });
           var rank = { ok: 0, near: 1, far: 2 };
           list.sort(function (x, y) { return rank[x.status] - rank[y.status] || x.mc - y.mc || zhSort(x.r.name, y.r.name); });
           var h = chips(RCATS, ui.rfilter, 'rfilter');
@@ -554,7 +560,7 @@
       if (!ui.sheet) return;
       var k = ui.sheet.kind, a = ui.sheet.args;
       var scanTitle = (k === 'stock-scan' && a.scanKind === 'receipt') ? '小票识别' : '拍照录入';
-      var title = { recipe: '菜谱', stock: '库存', ing: '新食材', 'recipe-form': '菜谱', 'stock-scan': scanTitle, vision: 'AI 接口设置' }[k] || '详情';
+      var title = { recipe: '菜谱', stock: '库存', ing: '新食材', 'recipe-form': '菜谱', 'stock-scan': scanTitle, vision: 'AI 接口设置', meal: '凑一顿' }[k] || '详情';
       sheetEl.setAttribute('aria-label', title);
       sheetEl.innerHTML = SHEETS[k](a);
       var sf = sheetEl.querySelector('form[data-form="stock"]');
@@ -586,6 +592,8 @@
             '<span><span class="ck-photo-add-t">添加成品照片</span><small>做好了拍一张，或者从相册选</small></span></button>';
         }
         h += '<div class="ck-sh-meta"><span>' + esc(r.cat) + '</span>' + (r.min ? '<span>大约 ' + r.min + ' 分钟</span>' : '') +
+          (r.prep ? '<span>备料 ' + r.prep + ' 分钟</span>' : '') + (r.cook ? '<span>烹饪 ' + r.cook + ' 分钟</span>' : '') +
+          '<span>' + (tagsOf(r).indexOf('不辣') >= 0 ? '口味偏清淡' : '口味偏辣/重') + '</span>' +
           (last ? '<span>上次做是' + agoLabel(last) + '</span>' : '') +
           (r.src && /^https?:\/\//i.test(r.src) ? '<a class="ck-src" href="' + esc(r.src) + '" target="_blank" rel="noopener noreferrer">原菜谱</a>' : '') + '</div>';
         h += '<div class="ck-sh-srv"><span>按</span>' + srvStepper(n, 'sh-srv') + '<span>人份算</span>' +
@@ -594,7 +602,7 @@
         if (a.items.length) {
           h += '<h3 class="ck-h3"><span>食材</span><small>要多少 / 家里有</small></h3><ul class="ck-need">' + a.items.map(function (it) {
             return '<li class="' + (it.short ? 'is-miss' : 'is-ok') + '"><span class="n">' + esc(it.n) + '</span><span class="q">要 ' + fmtQty(it.need, it.u) + '</span>' +
-              '<span class="h">' + (it.short ? '差 ' + fmtQty(it.short, it.u) : '有 ' + fmtQty(it.have, it.u)) + '</span></li>';
+              '<span class="h">' + (it.short ? '差 ' + fmtQty(it.short, it.u) : '有 ' + fmtQty(it.have, it.u)) + (it.subs && it.subs.length ? '（可用' + esc(it.subs.join('/')) + '）' : '') + '</span></li>';
           }).join('') + '</ul>';
         }
         if (a.sp.length) {
@@ -604,7 +612,11 @@
           }).join('') + '</div>';
         }
         if (r.steps && r.steps.length) {
-          h += '<h3 class="ck-h3"><span>做法</span></h3><ol class="ck-steps">' + r.steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ol>';
+          h += '<h3 class="ck-h3"><span>做法</span><small>有时间的步骤可以点计时</small></h3><ol class="ck-steps">' + r.steps.map(function (s) {
+            var sec = window.CookWeb ? window.CookWeb.stepDuration(s) : null;
+            var timer = sec ? ' <button type="button" class="ck-timer" data-act="timer" data-sec="' + sec + '" aria-label="开始计时">计时 ' + fmtDur(sec) + '</button>' : '';
+            return '<li>' + esc(s) + timer + '</li>';
+          }).join('') + '</ol>';
         }
         h += '<div class="ck-sh-actions">';
         if (a.used > 0 || !a.items.length) {
@@ -637,8 +649,16 @@
             : '<span class="ck-unit">' + esc(u) + '</span>') + '</div>';
         h += '<p class="ck-hint" data-hint></p>';
         var exp = mode === 'set' && st && st.exp ? st.exp : '';
+        var rec = E.shelfLife(S, name);
+        var expVals = ['', '3', '7', '14'], expLabs = ['不记', '3 天内', '一周', '两周'];
+        if (rec) {
+          var ri = expVals.indexOf(String(rec));
+          if (ri < 0) { expVals.splice(1, 0, String(rec)); expLabs.splice(1, 0, '推荐 ' + rec + ' 天'); }
+          else expLabs[ri] = '推荐 ' + rec + ' 天';
+        }
         h += '<span class="ck-label">' + (mode === 'add' && st ? '这次买的什么时候到期' : '什么时候到期') + '<small>不填也行，填了会优先推荐用它的菜</small></span>' +
-          '<div class="ck-opts" role="radiogroup" aria-label="保质期">' + optList('exp', ['', '3', '7', '14'], exp ? 'x' : '', ['不记', '3 天内', '一周', '两周']) + '</div>' +
+          (rec ? '<p class="ck-note">' + esc(name) + '一般能放 ' + rec + ' 天左右，可以点下面的推荐。</p>' : '') +
+          '<div class="ck-opts" role="radiogroup" aria-label="保质期">' + optList('exp', expVals, exp ? 'x' : '', expLabs) + '</div>' +
           '<label class="ck-date">或者选日期<input class="ck-field" type="date" name="date" value="' + esc(exp) + '"></label>';
         h += '<p class="ck-err" role="alert"></p>';
         h += '<div class="ck-form-foot">' + (st ? '<button type="button" class="ck-btn-text is-danger" data-act="stock-del" data-n="' + esc(name) + '">用完了</button>' : '') +
@@ -664,10 +684,12 @@
         var dr = args.draft || null;
         var rows = dr ? dr.items : r ? Object.keys(r.items).map(function (k) { return { n: k, q: r.items[k] }; }) : [{}, {}, {}];
         if (dr && !rows.length) rows = [{}];
-        var sp = dr ? dr.sp.concat(dr.extra) : r ? (r.s || []).concat(r.o || []) : [];
-        var spList = uniq(allSpices().concat(dr ? dr.extra : []));
+        var sp = dr ? dr.sp.concat(dr.extra) : r ? (r.s || []) : [];
+        var opt = dr ? (dr.opt || []) : r ? (r.o || []) : [];
+        var spList = uniq(allSpices().concat(dr ? dr.extra.concat(dr.opt || []) : [], r ? (r.s || []).concat(r.o || []) : []));
         var src = dr ? dr.src : r && r.src ? r.src : '';
         var steps = dr ? dr.steps : r && r.steps ? r.steps : [];
+        var bases = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         var h = sheetHead(r ? '编辑菜谱' : '新建菜谱');
         if (!r) h += noteBox(args);
         h += '<form class="ck-form" data-form="recipe" novalidate>' +
@@ -675,14 +697,17 @@
           '<input class="ck-field" id="ck-rn-' + id + '" name="name" value="' + esc(dr ? dr.name : r ? r.name : '') + '" autocomplete="off" placeholder="比如 酸辣土豆丝">' +
           '<span class="ck-label">成品照片<small>可以不加</small></span><div class="ck-fphoto" data-fphoto>' + formPhotoInner() + '</div>' +
           '<span class="ck-label">分类</span><div class="ck-opts" role="radiogroup" aria-label="分类">' + optList('cat', RCATS, dr ? dr.cat : r ? r.cat : '素菜') + '</div>' +
-          '<span class="ck-label">下面的用量是几人份</span><div class="ck-opts" role="radiogroup" aria-label="人份">' + optList('base', [1, 2, 3, 4], dr ? dr.base : r ? r.base : 2, ['1 人', '2 人', '3 人', '4 人']) + '</div>' +
+          '<span class="ck-label">下面的用量是几人份</span><div class="ck-opts" role="radiogroup" aria-label="人份">' + optList('base', bases, dr ? dr.base : r ? r.base : 2, bases.map(function (b) { return b + ' 人'; })) + '</div>' +
           '<label class="ck-label" for="ck-rm-' + id + '">大约几分钟<small>可不填</small></label>' +
           '<input class="ck-field" id="ck-rm-' + id + '" name="min" type="text" inputmode="numeric" value="' + esc(dr && dr.min ? dr.min : (r && r.min ? r.min : '')) + '" style="max-width:120px">' +
           '<span class="ck-label">食材和用量' + (dr && dr.items.some(function (x) { return x.note; }) ? '<small>标黄的请核对一下</small>' : '') + '</span>' +
           '<div data-rows>' + rows.map(function (it) { return ingRow(it.n || '', it.q === undefined ? '' : it.q, it.u, it.note); }).join('') + '</div>' +
           '<button type="button" class="ck-addrow" data-act="add-row">＋ 再加一样</button>' +
-          '<span class="ck-label">要用的调料</span><div class="ck-opts">' + spList.map(function (s) {
+          '<span class="ck-label">必需调料<small>家里没有就算缺</small></span><div class="ck-opts">' + spList.map(function (s) {
             return '<label class="ck-opt"><input type="checkbox" name="sp" value="' + esc(s) + '"' + (sp.indexOf(s) >= 0 ? ' checked' : '') + '><span>' + esc(s) + '</span></label>';
+          }).join('') + '</div>' +
+          '<span class="ck-label">可选调料<small>没有也不影响能做</small></span><div class="ck-opts">' + spList.map(function (s) {
+            return '<label class="ck-opt"><input type="checkbox" name="osp" value="' + esc(s) + '"' + (opt.indexOf(s) >= 0 ? ' checked' : '') + '><span>' + esc(s) + '</span></label>';
           }).join('') + '</div>' +
           '<label class="ck-label" for="ck-rs-' + id + '">做法<small>一行一步</small></label>' +
           '<textarea class="ck-field" id="ck-rs-' + id + '" name="steps" placeholder="土豆切丝泡水&#10;热油炒香蒜&#10;下土豆丝大火快炒">' + esc(steps.join('\n')) + '</textarea>' +
@@ -709,6 +734,34 @@
           '<p class="ck-err" role="alert"></p>' +
           '<div class="ck-form-foot">' + (c.key ? '<button type="button" class="ck-btn-text is-danger" data-act="vision-clear">清除设置</button>' : '') +
           '<button type="submit" class="ck-btn">保存</button></div></form>';
+        return h;
+      },
+
+      meal: function () {
+        var m = E.planMeal(S, { servings: S.servings, dishes: ui.mealDishes, soup: ui.mealSoup });
+        var h = sheetHead('帮我凑一顿');
+        h += '<p class="ck-note">按 ' + S.servings + ' 人份，在库存不打架的前提下凑一桌，优先用掉快过期的。</p>';
+        h += '<div class="ck-sh-srv"><span>菜</span>' +
+          '<button type="button" class="ck-round" data-act="meal-dishes" data-d="-1" aria-label="少一道菜"' + (ui.mealDishes <= 0 ? ' disabled' : '') + '>−</button>' +
+          '<b class="ck-srv-n">' + ui.mealDishes + '</b>' +
+          '<button type="button" class="ck-round" data-act="meal-dishes" data-d="1" aria-label="多一道菜"' + (ui.mealDishes >= 6 ? ' disabled' : '') + '>+</button>' +
+          '<span style="margin-left:12px">汤</span>' +
+          '<button type="button" class="ck-round" data-act="meal-soup" data-d="-1" aria-label="少一道汤"' + (ui.mealSoup <= 0 ? ' disabled' : '') + '>−</button>' +
+          '<b class="ck-srv-n">' + ui.mealSoup + '</b>' +
+          '<button type="button" class="ck-round" data-act="meal-soup" data-d="1" aria-label="多一道汤"' + (ui.mealSoup >= 3 ? ' disabled' : '') + '>+</button></div>';
+        if (!m.dishes.length) {
+          h += '<p class="ck-empty">按现在的库存凑不出一顿，先把缺的加进清单，或减少菜数。</p>';
+        } else {
+          h += '<h3 class="ck-h3"><span>这一桌</span><small>' + m.dishes.length + ' 道</small></h3><div class="ck-panel">' +
+            m.dishes.map(function (a) { return dishRow(a); }).join('') + '</div>';
+          if (m.expiringUsed.length) h += '<p class="ck-note">能用掉快过期的：' + esc(m.expiringUsed.join('、')) + '</p>';
+          if (m.missing.length) h += '<p class="ck-miss-t">还缺食材：' + esc(m.missing.map(function (x) { return x.n + ' ' + fmtQty(x.q, x.u); }).join('、')) + '</p>';
+          if (m.missingSeasonings.length) h += '<p class="ck-miss-t">还缺调料：' + esc(m.missingSeasonings.join('、')) + '</p>';
+          if (m.complete) h += '<p class="ck-ok-t">这一桌都够了，可以做。</p>';
+        }
+        h += '<div class="ck-sh-actions">';
+        if (m.missing.length || m.missingSeasonings.length) h += '<button type="button" class="ck-btn ck-btn-block" data-act="meal-shop">把缺的加入清单</button>';
+        h += '<button type="button" class="ck-btn-2 ck-btn-block" data-act="close-sheet">先看看</button></div>';
         return h;
       },
 
@@ -755,6 +808,8 @@
       var u = known ? known.u : (it.unit && UNITS.indexOf(it.unit) >= 0 ? it.unit : '个');
       var have = S.stock[it.name] ? '现有 ' + fmtQty(S.stock[it.name].qty, unitOf(it.name)) : '';
       var note = it.note || (known ? '' : '新食材，保存时会加进字典');
+      var recDays = known ? E.shelfLife(S, it.name) : null;
+      if (recDays) note = (note ? note + ' · ' : '') + '建议 ' + recDays + ' 天内吃完';
       if (have) note = (note ? note + ' · ' : '') + have;
       return '<div class="ck-irow ck-scanrow' + (note ? ' is-check' : '') + '" data-kind="stock">' +
         '<input class="ck-field" name="sn" list="' + dlId + '" value="' + esc(it.name || '') + '" placeholder="食材" autocomplete="off" aria-label="食材">' +
@@ -979,6 +1034,24 @@
 
     /* ---------- 提示条 ---------- */
 
+    function startTimer(btn, sec) {
+      var left = sec;
+      btn.disabled = true;
+      function label() { if (document.body.contains(btn)) btn.textContent = '剩 ' + fmtDur(Math.max(0, left)); }
+      label();
+      var iv = setInterval(function () {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(iv);
+          if (document.body.contains(btn)) btn.textContent = '时间到';
+          toast('计时结束，看看这一步好了没');
+          return;
+        }
+        label();
+      }, 1000);
+      timers.push(iv);
+    }
+
     function toast(msg, actLabel, fn) {
       clearTimeout(toastTimer);
       toastEl.querySelector('.ck-toast-msg').textContent = msg;
@@ -1130,7 +1203,10 @@
       recipe: function (f) {
         var name = String(f.name.value).trim();
         if (!name) { formErr(f, '先写菜名'); return; }
-        var items = {}, sp = [], newIngs = {}, bad = '';
+        var rid = f.querySelector('[name=rid]').value;
+        var dup = allRecipes().filter(function (r) { return r.name === name && r.id !== rid; })[0];
+        if (dup) { formErr(f, (dup.mine ? '已经有同名菜谱' : '内置菜谱里已经有') + '「' + name + '」，换个名字再保存'); return; }
+        var items = {}, sp = [], opt = [], newIngs = {}, bad = '';
         f.querySelectorAll('.ck-irow').forEach(function (row) {
           var n = normName(row.querySelector('[name=in]').value);
           if (!n) return;
@@ -1145,15 +1221,19 @@
           if (!info(x.value) && !newIngs[x.value]) newIngs[x.value] = { u: '', c: '调料' }; // 导入时识别出的新调料
           if (sp.indexOf(x.value) < 0) sp.push(x.value);
         });
+        f.querySelectorAll('input[name=osp]:checked').forEach(function (x) {
+          if (!info(x.value) && !newIngs[x.value]) newIngs[x.value] = { u: '', c: '调料' };
+          if (sp.indexOf(x.value) < 0 && opt.indexOf(x.value) < 0) opt.push(x.value);
+        });
         if (!Object.keys(items).length && !sp.length) { formErr(f, '至少填一样食材'); return; }
         Object.keys(newIngs).forEach(function (k) { S.custom.ing[k] = newIngs[k]; });
         var rec = {
-          id: f.querySelector('[name=rid]').value || 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          id: rid || 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           name: name,
           cat: radioVal(f, 'cat') || '素菜',
-          base: +radioVal(f, 'base') || 2,
+          base: Math.min(12, Math.max(1, +radioVal(f, 'base') || 2)),
           min: parseInt(f.min.value, 10) || 0,
-          items: items, s: sp, o: [],
+          items: items, s: sp, o: opt,
           steps: String(f.steps.value).split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
           src: /^https?:\/\//i.test(f.querySelector('[name=src]').value) ? f.querySelector('[name=src]').value : '',
           mine: true
@@ -1234,13 +1314,29 @@
         case 'tab': ui.tab = t.getAttribute('data-tab'); ui.q = ''; ui.rq = ''; render(); break;
         case 'srv': S.servings = Math.min(12, Math.max(1, S.servings + d)); commit(); render(); break;
         case 'filter': ui.filter = t.getAttribute('data-v'); renderBody(); break;
+        case 'tagfilter': { var tv = t.getAttribute('data-v'); ui.tag = tv === '全部' || tv === ui.tag ? '' : tv; renderBody(); break; }
         case 'rfilter': ui.rfilter = t.getAttribute('data-v'); renderBody(); break;
         case 'toggle-far': ui.showFar = !ui.showFar; renderBody(); break;
+        case 'meal': openSheet('meal'); break;
+        case 'meal-dishes': ui.mealDishes = Math.min(6, Math.max(0, ui.mealDishes + d)); renderSheet(); break;
+        case 'meal-soup': ui.mealSoup = Math.min(3, Math.max(0, ui.mealSoup + d)); renderSheet(); break;
+        case 'meal-shop': {
+          var mm = E.planMeal(S, { servings: S.servings, dishes: ui.mealDishes, soup: ui.mealSoup });
+          var mc2 = E.mealToShop(S, mm);
+          commit(); closeSheet(); render();
+          toast(mc2 ? '已把 ' + mc2 + ' 样加入清单' : '没有要补的', mc2 ? '去看看' : null, mc2 ? function () { ui.tab = 'shop'; render(); toastEl.classList.remove('is-on'); } : null);
+          break;
+        }
         case 'demo': loadDemo(); break;
         case 'recipe': openSheet('recipe', { id: t.getAttribute('data-id') }); break;
         case 'close-sheet': closeSheet(); break;
         case 'sh-srv': ui.sheetServ = Math.min(12, Math.max(1, ui.sheetServ + d)); renderSheet(); break;
         case 'cook': cook(t.getAttribute('data-id')); break;
+        case 'timer': {
+          var sec = +t.getAttribute('data-sec');
+          if (sec > 0 && !t.disabled) startTimer(t, sec);
+          break;
+        }
         case 'miss-to-shop': missToShop(t.getAttribute('data-id')); break;
         case 'new-recipe': ui.impShots = []; openSheet('recipe-form', {}); break;
         case 'note-run': runNote(t); break;
@@ -1445,8 +1541,10 @@
         var data;
         try { data = JSON.parse(reader.result); } catch (e) { toast('这个文件不是有效的备份'); return; }
         if (!data || typeof data !== 'object' || !data.stock || typeof data.stock !== 'object' || Array.isArray(data.stock)) { toast('这个文件不是做饭模块的备份'); return; }
-        if (!window.confirm('导入会覆盖现在的库存、调料、清单和自己的菜谱，继续？')) return;
-        S = E.normalize(data);
+        var doMerge = window.confirm('把备份合并进现在的数据？\n（库存数量相加、同名菜谱覆盖；点「取消」可以选择覆盖导入）');
+        if (!doMerge && !window.confirm('覆盖导入会替换现在的库存、调料、清单和自己的菜谱，继续？')) return;
+        var base = doMerge && window.CookWeb ? window.CookWeb.mergeState(S, data) : data;
+        S = E.normalize(base);
         var nextPhotos = {};
         if (data.photos && typeof data.photos === 'object' && !Array.isArray(data.photos)) {
           Object.keys(data.photos).forEach(function (rid) {
@@ -1456,6 +1554,7 @@
             }
           });
         }
+        if (doMerge) Object.keys(photos).forEach(function (rid) { if (!nextPhotos[rid]) nextPhotos[rid] = photos[rid]; });
         Object.keys(photos).forEach(function (rid) {
           if (!nextPhotos[rid]) { delete photos[rid]; PhotoDB.del(photoPrefix + rid); }
         });
@@ -1463,7 +1562,7 @@
           photos[rid] = nextPhotos[rid];
           PhotoDB.set(photoPrefix + rid, photos[rid]);
         });
-        commit(); render(); toast('导入好了');
+        commit(); render(); toast(doMerge ? '已合并导入' : '导入好了');
       };
       reader.readAsText(file);
     }
@@ -1546,6 +1645,8 @@
       destroy: function () {
         destroyed = true;
         cleanups.forEach(function (fn) { fn(); });
+        timers.forEach(function (iv) { clearInterval(iv); });
+        timers = [];
         clearTimeout(toastTimer);
         document.documentElement.classList.remove('ck-lock');
         el.innerHTML = '';

@@ -229,7 +229,7 @@ async function extra() {
     const RECIPE_OK = { choices: [{ message: { content: JSON.stringify({ title: ' 番茄炒蛋 ', category: '蛋类', minutes: '10', serves: 9, ingredients: [{ name: '番茄', amount: '2个' }, { name: '番茄', amount: '1个' }, { name: '', amount: 'x' }], seasonings: ['盐', '盐', '糖'], steps: ['切', ' ', '炒'] }) } }] };
     const r = await A.recipeFromNote({ key: 'k', base: 'https://example.com/v1' }, { text: '番茄两个 鸡蛋三个', images: ['data:image/jpeg;base64,xx', 'not-an-image'], source: 'https://example.com/n/1' }, fakeFetch(200, RECIPE_OK, seen));
     assert.strictEqual(r.title, '番茄炒蛋');
-    assert.strictEqual(r.serves, 4);
+    assert.strictEqual(r.serves, 9);
     assert.strictEqual(r.minutes, 10);
     assert.deepStrictEqual(r.ingredients, [{ name: '番茄', amount: '2个' }]);
     assert.deepStrictEqual(r.seasonings, ['盐', '糖']);

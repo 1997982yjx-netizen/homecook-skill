@@ -9,6 +9,8 @@
  *
  * 启动后电脑上打开 http://localhost:8080；
  * 手机和电脑连同一个 Wi-Fi 时，用终端里打印的"手机访问"地址打开。
+ *
+ * 也可以 require('./server.js').createServer() 自己在测试或别的服务里挂载。
  */
 'use strict';
 const http = require('http');
@@ -18,44 +20,55 @@ const os = require('os');
 const { handleVisionStock, handleRecipeFromNote } = require('./server/vision-proxy');
 
 const ROOT = __dirname;
-const PORT = +process.env.PORT || 8080;
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon'
+  '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon'
 };
 // 只对外提供页面要用的文件，服务端代码、脚本、说明文档都不提供
-const PUBLIC = /^\/(index\.html|embed-example\.html|cook\.js|cook\.css|recipes\.js|core\/[\w.-]+\.js|images\/[^/]+)$/;
+const PUBLIC = /^\/(index\.html|embed-example\.html|cook\.js|cook\.css|recipes\.js|manifest\.json|sw\.js|core\/[\w.-]+\.js|images\/[^/]+)$/;
 
-const server = http.createServer((req, res) => {
-  let url;
-  try { url = new URL(req.url, 'http://localhost'); } catch (e) { res.writeHead(400); return res.end('Bad request'); }
-  if (url.pathname === '/api/vision-stock') return handleVisionStock(req, res);
-  if (url.pathname === '/api/recipe-from-note') return handleRecipeFromNote(req, res);
-  if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
+function createServer() {
+  return http.createServer((req, res) => {
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch (e) { res.writeHead(400); return res.end('Bad request'); }
+    if (url.pathname === '/api/vision-stock') return handleVisionStock(req, res);
+    if (url.pathname === '/api/recipe-from-note') return handleRecipeFromNote(req, res);
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
 
-  let rel;
-  try { rel = decodeURIComponent(url.pathname); } catch (e) { res.writeHead(400); return res.end(); }
-  if (rel === '/') rel = '/index.html';
-  const file = path.normalize(path.join(ROOT, rel));
-  const ext = path.extname(file).toLowerCase();
-  if (!PUBLIC.test(rel) || !file.startsWith(ROOT + path.sep) || !TYPES[ext]) { res.writeHead(404); return res.end('Not found'); }
-  fs.readFile(file, (err, buf) => {
-    if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': TYPES[ext], 'Cache-Control': 'no-cache' });
-    res.end(req.method === 'HEAD' ? undefined : buf);
+    let rel;
+    try { rel = decodeURIComponent(url.pathname); } catch (e) { res.writeHead(400); return res.end('Bad request'); }
+    if (rel === '/') rel = '/index.html';
+    const file = path.normalize(path.join(ROOT, rel));
+    const ext = path.extname(file).toLowerCase();
+    if (!PUBLIC.test(rel) || !file.startsWith(ROOT + path.sep) || !TYPES[ext]) { res.writeHead(404); return res.end('Not found'); }
+    fs.readFile(file, (err, buf) => {
+      if (err) { res.writeHead(404); return res.end('Not found'); }
+      const type = rel === '/manifest.json' ? 'application/manifest+json; charset=utf-8' : TYPES[ext];
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+      res.end(req.method === 'HEAD' ? undefined : buf);
+    });
   });
-});
+}
 
-server.on('error', (err) => {
-  console.error(err.code === 'EADDRINUSE' ? `端口 ${PORT} 已被占用，可以用 PORT=其他端口 node server.js` : `服务启动失败：${err.message}`);
-  process.exit(1);
-});
+function listen(port) {
+  const p = port || +process.env.PORT || 8080;
+  const server = createServer();
+  server.on('error', (err) => {
+    console.error(err.code === 'EADDRINUSE' ? `端口 ${p} 已被占用，可以用 PORT=其他端口 node server.js` : `服务启动失败：${err.message}`);
+    process.exit(1);
+  });
+  server.listen(p, () => {
+    console.log(`做饭页面已启动：http://localhost:${p}`);
+    console.log(process.env.VISION_API_KEY || process.env.OPENAI_API_KEY
+      ? '识图代理已开启：/api/vision-stock、/api/recipe-from-note（用的是你环境变量里的密钥）'
+      : '识图代理没开启：需要的话设置 VISION_API_KEY 后重启，或在页面「AI 接口设置」里填自己的接口');
+    Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === 'IPv4' && !n.internal)
+      .forEach((n) => console.log(`手机访问（同一个 Wi-Fi）：http://${n.address}:${p}`));
+  });
+  return server;
+}
 
-server.listen(PORT, () => {
-  console.log(`做饭页面已启动：http://localhost:${PORT}`);
-  console.log(process.env.VISION_API_KEY || process.env.OPENAI_API_KEY
-    ? '识图代理已开启：/api/vision-stock、/api/recipe-from-note（用的是你环境变量里的密钥）'
-    : '识图代理没开启：需要的话设置 VISION_API_KEY 后重启，或在页面「AI 接口设置」里填自己的接口');
-  Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === 'IPv4' && !n.internal)
-    .forEach((n) => console.log(`手机访问（同一个 Wi-Fi）：http://${n.address}:${PORT}`));
-});
+if (require.main === module) listen();
+
+module.exports = { createServer, listen, ROOT, PUBLIC };

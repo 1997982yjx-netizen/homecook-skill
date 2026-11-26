@@ -1,0 +1,15 @@
+{
+  "name": "做饭 · 按库存算能做什么",
+  "short_name": "做饭",
+  "description": "按家里的食材库存算能做哪些家常菜，差什么也能列出来。",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EEF2F7",
+  "theme_color": "#0F766E",
+  "icons": [
+    { "src": "images/番茄炒蛋.jpg", "sizes": "800x800", "type": "image/jpeg", "purpose": "any" },
+    { "src": "images/蛋炒饭.jpg", "sizes": "800x800", "type": "image/jpeg", "purpose": "any" }
+  ]
+}

@@ -8,6 +8,7 @@
   "bin": { "homecook": "scripts/cook.js" },
   "scripts": {
     "start": "node server.js",
-    "test": "node tools/check-recipes.js && node tools/test-engine.js && node tools/test-draft.js && node tools/test-cli.js && node tools/test-vision.js"
+    "test": "node tools/check-recipes.js && node tools/test-engine.js && node tools/test-draft.js && node tools/test-cli.js && node tools/test-vision.js && node tools/test-web.js && node tools/test-server.js",
+    "recipes:json": "node tools/export-recipes.js"
   }
 }

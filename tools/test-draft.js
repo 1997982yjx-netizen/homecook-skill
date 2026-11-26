@@ -117,4 +117,28 @@ test('边界校验：除零/零值拒绝、中文波浪号范围、调料子串�
   assert.strictEqual(s2.custom.ing['新食材甲'], undefined, '校验失败不能污染自定义字典');
 });
 
+test('可选调料和必需调料分开，1-12 人份都保留', () => {
+  const s = S();
+  const dr = D.fromNote(E, s, {
+    title: '大份炒蛋', serves: 6,
+    ingredients: [{ name: '鸡蛋', amount: '6个' }],
+    seasonings: ['盐'],
+    optional: ['葱花', '香油']
+  });
+  assert.strictEqual(dr.base, 6);
+  assert.deepStrictEqual(dr.sp, ['盐']);
+  assert.deepStrictEqual(dr.opt.sort(), ['葱', '香油'].sort());
+  const res = D.toRecipe(E, s, dr);
+  assert.ok(res.recipe);
+  assert.deepStrictEqual(res.recipe.s, ['盐']);
+  assert.deepStrictEqual(res.recipe.o.sort(), ['葱', '香油'].sort());
+  assert.strictEqual(res.recipe.base, 6);
+});
+
+test('可选调料不会混进必需调料（重复时以必需为准）', () => {
+  const dr = D.fromNote(E, S(), { title: 'x', ingredients: [], seasonings: ['盐'], optional: ['盐', '葱'] });
+  assert.deepStrictEqual(dr.sp, ['盐']);
+  assert.deepStrictEqual(dr.opt, ['葱']);
+});
+
 console.log(`\n${n} 项测试全部通过。`);

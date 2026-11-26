@@ -9,68 +9,21 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
-  var UNITS = ['克', '个', '根', '包', '块', '条', '碗', '朵', '毫升', '瓶', '袋'];
-  var WEIGHT = { '克': 1, 'g': 1, 'G': 1, '两': 50, '斤': 500, '千克': 1000, 'kg': 1000, 'KG': 1000 };
-  var SKIP = /^(水|清水|温水|开水|热水|冷水|凉水|冰水|冰块|纯净水|矿泉水|盘子|碗|筷子|锅|人|手|购物袋|塑料袋|背心袋|打包袋|保鲜袋|包装费|打包费|配送费|运费|服务费|会员|积分|微信支付|支付宝|现金|找零|税费|折扣)$/;
-  var AVG_G = {
-    '番茄': 150, '土豆': 200, '青椒': 100, '黄瓜': 250, '茄子': 250, '胡萝卜': 150, '洋葱': 200, '香菇': 20,
-    '鸡蛋': 55, '皮蛋': 60, '豆腐': 400, '鸡翅': 50, '鸡腿': 200, '鱼': 600, '米饭': 200, '火腿肠': 50, '金针菇': 200
-  };
+  var Dict = (typeof module === 'object' && module.exports) ? require('./dict-utils.js') : (typeof window !== 'undefined' ? window.CookDict : null);
+  var UNITS = Dict.UNITS;
+  var WEIGHT = Dict.WEIGHT;
+  var SKIP = Dict.SKIP_STOCK;
+  var AVG_G = Dict.AVG_G;
 
   function r2(n) { return Math.round(n * 100) / 100; }
-  function num(v) {
-    if (typeof v === 'number' && isFinite(v) && v > 0) return v;
-    if (typeof v === 'string') {
-      var n = parseFloat(v.replace(/[^\d.]/g, ''));
-      if (isFinite(n) && n > 0) return n;
-    }
-    return null;
-  }
-  function canonUnit(u) {
-    u = String(u || '').trim();
-    if (UNITS.indexOf(u) >= 0) return u;
-    if (WEIGHT[u]) return '克';
-    var low = u.toLowerCase();
-    if (low === 'ml' || low === '毫升') return '毫升';
-    return '';
-  }
-  function gramsOf(item) {
-    var g = num(item.weight_g);
-    if (g) return g;
-    var u = String(item.unit || '').trim();
-    var q = num(item.qty);
-    if (q && WEIGHT[u]) return q * WEIGHT[u];
-    if (q && (u === 'g' || u === 'G')) return q;
-    return null;
-  }
+  var num = Dict.num;
+  var canonUnit = Dict.canonUnit;
+  var gramsOf = Dict.gramsOf;
 
-  function infoOf(name, dict) {
-    if (dict.ingredients[name]) return { u: dict.ingredients[name][0], c: dict.ingredients[name][1] };
-    if (dict.seasonings.indexOf(name) >= 0) return { u: '', c: '调料' };
-    var c = dict.customIng[name];
-    if (c) return { u: c.c === '调料' ? '' : (c.u || '个'), c: c.c || '其他' };
-    return null;
-  }
+  function infoOf(name, dict) { return Dict.infoOf(name, dict); }
 
   function matchName(raw, dict) {
-    var s = String(raw || '').replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').replace(/\s+/g, '').trim();
-    if (!s) return { name: '', known: false };
-    var n = dict.alias[s] || s;
-    if (infoOf(n, dict)) return { name: n, known: true };
-    var t = s.replace(/^(新鲜|冷冻|去皮|去骨|带皮|精选|嫩|土)/, '').replace(/(丁|丝|片|块|末|碎|段|粒|泥|液|汁|蓉)$/, '');
-    n = dict.alias[t] || t;
-    if (t && infoOf(n, dict)) return { name: n, known: true };
-    var best = '';
-    Object.keys(dict.ingredients).forEach(function (k) {
-      if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k;
-    });
-    dict.seasonings.forEach(function (k) {
-      if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k;
-    });
-    Object.keys(dict.customIng || {}).forEach(function (k) {
-      if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k;
-    });
-    return best ? { name: best, known: true } : { name: s, known: false };
+    return Dict.matchName(raw, dict);
   }
 
   function qtyFor(item, unit, name) {

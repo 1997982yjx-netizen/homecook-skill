@@ -15,6 +15,7 @@ const path = require('path');
 const CookEngine = require('../core/engine.js');
 const CookVision = require('../core/vision-map.js');
 const CookDraft = require('../core/recipe-draft.js');
+const WebUtils = require('../core/web-utils.js');
 const DATA = require('../recipes.js');
 
 const E = CookEngine.create(DATA);
@@ -30,7 +31,7 @@ function parseArgs(argv) {
       const eq = a.indexOf('=');
       if (eq > 0) { flags[a.slice(2, eq)] = a.slice(eq + 1); continue; }
       const k = a.slice(2), next = argv[i + 1];
-      if (['json', 'all', 'set', 'apply', 'help'].includes(k) || next === undefined || next.startsWith('--')) flags[k] = true;
+      if (['json', 'all', 'set', 'apply', 'help', 'merge', 'no-spicy'].includes(k) || next === undefined || next.startsWith('--')) flags[k] = true;
       else { flags[k] = next; i++; }
     } else pos.push(a);
   }
@@ -87,13 +88,25 @@ function servingsOf(flags, S) {
   if (!(n >= 1 && n <= 12)) die('--servings 要是 1 到 12 的整数');
   return n;
 }
-function dishJson(a) {
+function listOf(v) {
+  if (v === undefined || v === true || v === '') return [];
+  return String(v).split(/[,，、\s]+/).map((x) => x.trim()).filter(Boolean);
+}
+function filtersOf(flags) {
+  const maxMin = flags['max-min'] === undefined ? undefined : Math.round(+flags['max-min']);
+  if (maxMin !== undefined && !(maxMin > 0)) die('--max-min 要把分钟数写成大于 0 的整数');
+  return { tags: listOf(flags.tag), noSpicy: !!flags['no-spicy'], maxMin, sort: flags.sort === 'time' ? 'time' : undefined };
+}
+function dishJson(S, a) {
   return {
     name: a.r.name, category: a.r.cat, minutes: a.r.min || null, mine: !!a.r.mine,
+    tags: E.tagsOf(S, a.r),
     status: a.status, missingCount: a.mc, maxServings: a.max,
-    missing: a.miss.map((m) => ({ name: m.n, qty: m.q, unit: m.u })),
+    missing: a.miss.map((m) => ({ name: m.n, qty: m.q, unit: m.u, substitutes: m.subs || [] })),
     missingSeasonings: a.missSp,
-    usesExpiring: a.exp
+    optionalSeasonings: a.sp.filter((x) => x.opt).map((x) => x.n),
+    usesExpiring: a.exp,
+    expired: a.expired
   };
 }
 function dishLine(a) {
@@ -101,7 +114,10 @@ function dishLine(a) {
   if (a.r.min) t += `（${a.r.min} 分钟）`;
   if (a.status === 'ok') t += a.max >= 12 ? '：量很足' : `：够 ${a.max} 人份`;
   else t += `：还差 ${E.missText(a, a.status === 'far' ? 3 : 0, fmtQty)}`;
+  const subs = a.miss.filter((m) => m.subs && m.subs.length).map((m) => `${m.n}可用${m.subs.join('/')}`);
+  if (subs.length) t += `；替代：${subs.join('，')}`;
   if (a.exp.length) t += `；能用掉快过期的${a.exp.join('、')}`;
+  if (a.expired.length) t += `；注意${a.expired.join('、')}已过期`;
   return t;
 }
 function needRecipe(S, name) {
@@ -171,10 +187,12 @@ const COMMANDS = {
 
   match(S, args, flags) {
     const n = servingsOf(flags, S);
-    const p = E.plan(S, { servings: n, category: flags.cat });
-    const json = { servings: n, ok: p.ok.map(dishJson), near: p.near.map(dishJson) };
-    if (flags.all) json.far = p.far.map(dishJson);
-    let text = `按 ${n} 人份算${flags.cat ? '（' + flags.cat + '）' : ''}：\n\n现在就能做（${p.ok.length} 道）\n`;
+    const f = filtersOf(flags);
+    const p = E.plan(S, { servings: n, category: flags.cat, tags: f.tags, noSpicy: f.noSpicy, maxMin: f.maxMin, sort: f.sort });
+    const json = { servings: n, ok: p.ok.map((a) => dishJson(S, a)), near: p.near.map((a) => dishJson(S, a)) };
+    if (flags.all) json.far = p.far.map((a) => dishJson(S, a));
+    const cond = [flags.cat ? flags.cat : '', f.tags.length ? '标签：' + f.tags.join('/') : '', f.noSpicy ? '不辣' : '', f.maxMin ? f.maxMin + ' 分钟内' : ''].filter(Boolean).join('，');
+    let text = `按 ${n} 人份算${cond ? '（' + cond + '）' : ''}：\n\n现在就能做（${p.ok.length} 道）\n`;
     text += p.ok.length ? p.ok.map(dishLine).join('\n') : '- 暂时没有。看看下面差一两样的，或者把人数调少一点';
     if (p.near.length) text += `\n\n只差一两样（${p.near.length} 道）\n` + p.near.map(dishLine).join('\n');
     if (flags.all && p.far.length) text += `\n\n还差得多（${p.far.length} 道）\n` + p.far.map(dishLine).join('\n');
@@ -183,19 +201,43 @@ const COMMANDS = {
     return { json, text };
   },
 
+  meal(S, args, flags) {
+    const n = servingsOf(flags, S);
+    const dishes = flags.dishes === undefined ? 2 : Math.round(+flags.dishes);
+    const soup = flags.soup === undefined ? 1 : Math.round(+flags.soup);
+    if (!(dishes >= 0 && dishes <= 6)) die('--dishes 要是 0 到 6 的整数');
+    if (!(soup >= 0 && soup <= 3)) die('--soup 要是 0 到 3 的整数');
+    if (!dishes && !soup) die('--dishes 和 --soup 不能同时是 0');
+    const m = E.planMeal(S, { servings: n, dishes, soup });
+    const json = {
+      servings: n, complete: m.complete, short: m.short,
+      dishes: m.dishes.map((a) => dishJson(S, a)),
+      missing: m.missing, missingSeasonings: m.missingSeasonings, usesExpiring: m.expiringUsed
+    };
+    const lines = [`按 ${n} 人份凑 ${dishes} 菜 ${soup} 汤：`];
+    if (!m.dishes.length) lines.push('- 家里的库存暂时凑不出一顿，先把缺的加进清单吧。');
+    m.dishes.forEach((a) => lines.push(`- ${a.r.name}（${a.r.cat}）`));
+    if (m.expiringUsed.length) lines.push('', '能用掉快过期的：' + m.expiringUsed.join('、'));
+    if (m.missing.length) lines.push('', '还缺食材：' + m.missing.map((x) => x.n + ' ' + fmtQty(x.q, x.u)).join('、'));
+    if (m.missingSeasonings.length) lines.push('还缺调料：' + m.missingSeasonings.join('、'));
+    if (m.complete) lines.push('', '这一桌都够了，可以做。');
+    else if (!m.missing.length && !m.missingSeasonings.length) lines.push('', `库存够做已选这些，还差 ${m.short} 道凑不齐。`);
+    return { json, text: lines.join('\n') };
+  },
+
   recipe(S, args, flags) {
     const r = needRecipe(S, args.join(''));
     const n = servingsOf(flags, S);
     const a = E.analyze(S, r, n);
     const steps = Array.isArray(r.steps) ? r.steps : [];
-    const json = Object.assign(dishJson(a), {
+    const json = Object.assign(dishJson(S, a), {
       servings: n,
-      ingredients: a.items.map((x) => ({ name: x.n, need: x.need, have: x.have, short: x.short, unit: x.u })),
+      ingredients: a.items.map((x) => ({ name: x.n, need: x.need, have: x.have, short: x.short, unit: x.u, substitutes: x.subs || [] })),
       seasonings: a.sp.map((x) => ({ name: x.n, have: x.has, optional: x.opt })),
       steps
     });
     const lines = [`${r.name}（${r.cat}${r.min ? '，约 ' + r.min + ' 分钟' : ''}），按 ${n} 人份：`, '', '食材：'];
-    a.items.forEach((x) => lines.push(`- ${x.n} 要 ${fmtQty(x.need, x.u)}，${x.short ? '差 ' + fmtQty(x.short, x.u) : '有 ' + fmtQty(x.have, x.u)}`));
+    a.items.forEach((x) => lines.push(`- ${x.n} 要 ${fmtQty(x.need, x.u)}，${x.short ? '差 ' + fmtQty(x.short, x.u) : '有 ' + fmtQty(x.have, x.u)}` + (x.subs && x.subs.length ? `（可用 ${x.subs.join('/')}）` : '')));
     if (a.sp.length) lines.push('', '调料：' + a.sp.map((x) => x.n + (x.opt ? '（可选）' : '') + (x.has ? '' : x.opt ? '' : '【没有】')).join('、'));
     if (steps.length) { lines.push('', '做法：'); steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`)); }
     lines.push('', a.status === 'ok' ? '都够，可以做。' : `缺 ${a.mc} 样：${E.missText(a, 0, fmtQty)}`);
@@ -203,8 +245,11 @@ const COMMANDS = {
   },
 
   recipes(S, args, flags) {
-    const list = E.allRecipes(S).filter((r) => !flags.cat || r.cat === flags.cat);
-    const json = list.map((r) => ({ name: r.name, category: r.cat, minutes: r.min || null, serves: r.base, mine: !!r.mine }));
+    const f = filtersOf(flags);
+    const q = args.join('') || flags.q || '';
+    const list = E.searchRecipes(S, { q, category: flags.cat, tags: f.tags, noSpicy: f.noSpicy, maxMin: f.maxMin });
+    if (f.sort === 'time') list.sort((a, b) => (a.min || 9999) - (b.min || 9999));
+    const json = list.map((r) => ({ name: r.name, category: r.cat, minutes: r.min || null, serves: r.base, tags: E.tagsOf(S, r), mine: !!r.mine }));
     const byCat = {};
     list.forEach((r) => { (byCat[r.cat] = byCat[r.cat] || []).push(r.name + (r.mine ? '（我的）' : '')); });
     const text = `共 ${list.length} 道：\n` + Object.keys(byCat).map((c) => `${c}：${byCat[c].join('、')}`).join('\n');
@@ -415,11 +460,11 @@ const COMMANDS = {
     const json = {
       applied: false, name: dr.name, category: dr.cat, serves: dr.base, minutes: dr.min || null,
       ingredients: dr.items.map((x) => ({ name: x.n, qty: x.q === '' ? null : x.q, unit: x.u || E.unitOf(S, x.n), note: x.note || '' })),
-      seasonings: dr.sp.concat(dr.extra), newSeasonings: dr.extra, steps: dr.steps, replaces: exact ? exact.name : null
+      seasonings: dr.sp.concat(dr.extra), optional: dr.opt || [], newSeasonings: dr.extra, steps: dr.steps, replaces: exact ? exact.name : null
     };
     const lines = [`${dr.name}（${dr.cat}，${dr.base} 人份${dr.min ? '，约 ' + dr.min + ' 分钟' : ''}）`, '食材：'];
     json.ingredients.forEach((x) => lines.push(`- ${x.name} ${x.qty === null ? '（用量待填）' : fmtQty(x.qty, x.unit)}${x.note ? '：' + x.note : ''}`));
-    lines.push('调料：' + (json.seasonings.join('、') || '（无）'));
+    lines.push('调料：' + (json.seasonings.join('、') || '（无）') + (json.optional.length ? '\n可选调料：' + json.optional.join('、') : ''));
     if (dr.steps.length) { lines.push('做法：'); dr.steps.forEach((t, i) => lines.push(`${i + 1}. ${t}`)); }
     if (flags.apply) {
       const res = CookDraft.toRecipe(E, S, dr, exact ? exact.id : undefined);
@@ -454,15 +499,22 @@ const COMMANDS = {
   },
 
   import(S, args, flags, ctx) {
-    if (!args[0]) die('写法：import 备份文件.json（会覆盖现在的数据）');
+    if (!args[0]) die('写法：import 备份文件.json [--merge]（默认覆盖现在的数据，--merge 按库存合并）');
     const src = path.resolve(args[0]);
     let raw;
     try { raw = JSON.parse(fs.readFileSync(src, 'utf8')); } catch (e) { die('备份文件读不出来：' + e.message); }
     if (!raw || typeof raw !== 'object' || !raw.stock || typeof raw.stock !== 'object' || Array.isArray(raw.stock)) die('这个文件不是做饭模块的备份');
+    if (flags.merge) {
+      ctx.replace = E.normalize(WebUtils.mergeState(S, raw));
+      const cur = photosOf(ctx.file).photos || {};
+      ctx.extra = raw.photos ? { photos: Object.assign({}, cur, raw.photos) } : photosOf(ctx.file);
+      ctx.dirty = true;
+      return { json: { file: src, merged: true }, text: '已按合并方式导入 ' + src + '（库存数量相加，菜谱同名覆盖）' };
+    }
     ctx.replace = E.normalize(raw);
     ctx.extra = raw.photos ? { photos: raw.photos } : {};
     ctx.dirty = true;
-    return { json: { file: src }, text: '已导入 ' + src };
+    return { json: { file: src, merged: false }, text: '已导入 ' + src + '（覆盖）' };
   },
 
   servings(S, args, flags, ctx) {
@@ -478,9 +530,13 @@ const HELP = `homecook：按家里的库存算能做什么菜
 用法：node scripts/cook.js <命令> [参数] [--json] [--state 数据文件]
 
   status                              概况：库存、能做几道、快过期的
-  match [--servings 3] [--cat 汤] [--all]   现在能做什么、差一两样的
+  match [--servings 3] [--cat 汤] [--all] [--tag 快手,不辣] [--no-spicy] [--max-min 15] [--sort time]
+                                      现在能做什么、差一两样的；可按标签/口味/耗时筛
+  meal [--dishes 2] [--soup 1] [--servings 3]
+                                      凑一顿（多道菜共享库存不冲突，优先用快过期的）
   recipe 番茄炒蛋 [--servings 3]       用量、家里有多少、缺什么、做法
-  recipes [--cat 荤菜]                 所有菜谱
+  recipes [搜索词] [--cat 荤菜] [--tag 快手] [--max-min 15] [--sort time]
+                                      所有菜谱，可按菜名/食材/调料/拼音首字母搜
   stock                               列出库存
   stock add 番茄 4 [--exp 3] [--set]   记库存（--exp 天数或日期；--set 改成这个数而不是累加）
   stock add 五花肉 1 斤                 论克的食材可以写 斤 / 两 / 千克
@@ -493,11 +549,11 @@ const HELP = `homecook：按家里的库存算能做什么菜
   recipe-import 菜谱.json [--apply]    把整理好的菜谱对照字典；--apply 保存为我的菜谱
   recipe-remove 菜名                   删掉自己加的菜谱
   servings 3                          以后默认按几人份算
-  export 文件.json / import 文件.json   和网页互相导入导出
+  export 文件.json / import 文件.json [--merge]   和网页互相导入导出（--merge 合并库存）
 
 数据文件：--state > 环境变量 HOMECOOK_STATE > ~/.homecook/data.json`;
 
-const VALUE_FLAGS = ['state', 'servings', 'cat', 'exp', 'unit'];
+const VALUE_FLAGS = ['state', 'servings', 'cat', 'exp', 'unit', 'tag', 'max-min', 'dishes', 'soup', 'q', 'sort'];
 
 function main(argv) {
   const { pos, flags } = parseArgs(argv);
