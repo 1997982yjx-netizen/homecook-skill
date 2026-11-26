@@ -166,4 +166,82 @@ test('parseYmd 拒绝不存在的日历日期', () => {
   assert.strictEqual(CookEngine.parseYmd('2026-02-29'), null);
 });
 
+test('一个人份时计数食材允许半份', () => {
+  assert.strictEqual(CookEngine.scaled(1, '块', 1, 2), 0.5);
+  assert.strictEqual(CookEngine.scaled(3, '个', 1, 2), 2);
+  assert.strictEqual(CookEngine.scaled(3, '个', 3, 2), 5);
+});
+
+test('菜谱标签按耗时、调料和做法推断', () => {
+  const S = state({});
+  const quick = E.tagsOf(S, E.findRecipe(S, '拍黄瓜'));
+  assert.ok(quick.indexOf('快手') >= 0);
+  assert.ok(quick.indexOf('不辣') >= 0);
+  assert.ok(quick.indexOf('免油烟') >= 0);
+  const spicy = E.tagsOf(S, E.findRecipe(S, '宫保鸡丁'));
+  assert.ok(spicy.indexOf('不辣') < 0);
+});
+
+test('搜索支持拼音首字母、调料和耗时筛选', () => {
+  const S = state({});
+  assert.ok(E.searchRecipes(S, { q: 'fqcd' }).some((r) => r.name === '番茄炒蛋'));
+  assert.ok(E.searchRecipes(S, { q: '八角' }).some((r) => r.name === '红烧肉'));
+  const quick = E.searchRecipes(S, { maxMin: 10 });
+  assert.ok(quick.length > 0);
+  quick.forEach((r) => assert.ok((r.min || 0) <= 10));
+  const noSpicy = E.searchRecipes(S, { noSpicy: true });
+  assert.ok(noSpicy.every((r) => E.tagsOf(S, r).indexOf('不辣') >= 0));
+});
+
+test('缺主料时给出家里有的替代食材', () => {
+  const r = E.findRecipe(state({}), '鱼香肉丝');
+  const S = state({ '鸡胸肉': 500 });
+  const a = E.analyze(S, r, 2, NOW);
+  const pork = a.items.filter((x) => x.n === '猪里脊')[0];
+  assert.ok(pork && pork.subs.indexOf('鸡胸肉') >= 0);
+});
+
+test('推荐保质天数按食材和分类给出', () => {
+  const S = state({});
+  S.custom.ing['秋葵'] = { u: '克', c: '蔬菜' };
+  assert.strictEqual(E.shelfLife(S, '青菜'), 3);
+  assert.strictEqual(E.shelfLife(S, '鸡蛋'), 14);
+  assert.strictEqual(E.shelfLife(S, '秋葵'), 4); // 没单独写，落到「蔬菜」分类
+  assert.strictEqual(E.shelfLife(S, '不存在的东西'), null);
+});
+
+test('凑一顿会在共享库存内选菜，库存不够时把缺的算出来', () => {
+  const S = state({ '番茄': 10, '鸡蛋': 20, '黄瓜': 5 });
+  const m = E.planMeal(S, { servings: 2, dishes: 2, soup: 0, now: NOW });
+  assert.strictEqual(m.dishes.length, 2);
+  assert.strictEqual(m.complete, true);
+  assert.deepStrictEqual(m.missing, []);
+  const S2 = state({ '番茄': 5, '鸡蛋': 4 });
+  const m2 = E.planMeal(S2, { servings: 2, dishes: 2, soup: 0, now: NOW });
+  assert.strictEqual(m2.complete, false);
+  assert.ok(m2.missing.length > 0 || m2.short > 0);
+});
+
+test('过期的食材单独标出，不再只说快过期', () => {
+  const r = E.findRecipe(state({}), '番茄炒蛋');
+  const S = state({ '番茄': { qty: 5, exp: '2026-10-19' }, '鸡蛋': 10 });
+  const a = E.analyze(S, r, 2, NOW);
+  assert.deepStrictEqual(a.expired, ['番茄']);
+  assert.deepStrictEqual(a.exp, []);
+});
+
+test('normalize 保留可选调料、1-12 人份', () => {
+  const S = E.normalize({
+    custom: { recipes: [{ id: 'u9', name: '大锅菜', base: 8, items: { '番茄': 4 }, o: ['香菜'], tags: ['快手'], prep: 5, cook: 20 }] },
+    servings: 6
+  });
+  const r = S.custom.recipes[0];
+  assert.strictEqual(r.base, 8);
+  assert.deepStrictEqual(r.o, ['香菜']);
+  assert.deepStrictEqual(r.tags, ['快手']);
+  assert.strictEqual(r.prep, 5);
+  assert.strictEqual(r.cook, 20);
+  assert.strictEqual(S.servings, 6);
+});
+
 console.log(`\n${n} 项测试全部通过。`);

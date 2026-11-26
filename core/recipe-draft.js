@@ -14,11 +14,10 @@
   'use strict';
 
   var RCATS = ['荤菜', '素菜', '蛋类', '汤', '主食'];
-  var UNITS = ['克', '个', '根', '包', '块', '条', '碗', '朵', '毫升', '瓶', '袋'];
-  var SKIP_ING = /^(水|清水|温水|开水|热水|冷水|凉水|冰水|冰块|纯净水|矿泉水)$/;
-  // 计数食材大约多重，用来把"300克番茄"换算成个数
-  var AVG_G = { '番茄': 150, '土豆': 200, '青椒': 100, '黄瓜': 250, '茄子': 250, '胡萝卜': 150, '洋葱': 200, '香菇': 20,
-    '鸡蛋': 55, '皮蛋': 60, '豆腐': 400, '鸡翅': 50, '鸡腿': 200, '鱼': 600, '米饭': 200, '火腿肠': 50, '金针菇': 200 };
+  var Dict = (typeof module === 'object' && module.exports) ? require('./dict-utils.js') : (typeof window !== 'undefined' ? window.CookDict : null);
+  var UNITS = Dict.UNITS;
+  var AVG_G = Dict.AVG_G;
+  var SKIP_ING = Dict.SKIP_ING;
 
   var CN = { '零': 0, '一': 1, '二': 2, '两': 2, '俩': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
   function cnInt(s) {
@@ -66,17 +65,7 @@
 
   // 原文里的名字对照字典：去掉括号、常见修饰词和刀工后缀，再找包含的字典词
   function matchName(E, S, raw) {
-    var s = String(raw || '').replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').replace(/\s+/g, '').trim();
-    if (!s) return { name: '', known: false };
-    var n = E.normName(S, s);
-    if (E.info(S, n)) return { name: n, known: true };
-    var t = s.replace(/^(新鲜|冷冻|去皮|去骨|带皮|精选|嫩|土)/, '').replace(/(丁|丝|片|块|末|碎|段|粒|泥|液|汁|蓉)$/, '');
-    n = E.normName(S, t);
-    if (t && E.info(S, n)) return { name: n, known: true };
-    var best = '';
-    var dictKeys = Object.keys(E.ingredients).concat(E.seasonings || [], Object.keys((S && S.custom && S.custom.ing) || {}));
-    dictKeys.forEach(function (k) { if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k; });
-    return best ? { name: best, known: true } : { name: s, known: false };
+    return Dict.matchName(raw, E.dict(S));
   }
 
   function guessCat(E, S, title, names) {
@@ -91,10 +80,16 @@
   // sp：字典里的调料；extra：字典里没有、又没写具体用量的东西，当作新调料
   function fromNote(E, S, p) {
     p = p || {};
-    var items = [], byName = {}, sp = [], extra = [];
+    var items = [], byName = {}, sp = [], opt = [], extra = [];
     var ings = (p.ingredients || []).slice();
-    (p.seasonings || []).concat(p.optional || []).forEach(function (name) {
+    (p.seasonings || []).forEach(function (name) {
       if (name && !ings.some(function (i) { return i.name === name; })) ings.push({ name: name, amount: '适量' });
+    });
+    // 可选调料单独收集，不再混进必需调料
+    (p.optional || []).forEach(function (name) {
+      if (!name) return;
+      var m = matchName(E, S, name);
+      if (m.name && opt.indexOf(m.name) < 0) opt.push(m.name);
     });
     ings.forEach(function (ing) {
       if (!ing || !ing.name) return;
@@ -144,11 +139,12 @@
     });
     var title = String(p.title || '').trim();
     var name = title.replace(/【[^】]*】|\[[^\]]*\]/g, '').trim() || title;
-    var serves = p.serves >= 1 && p.serves <= 4 ? Math.round(p.serves) : 2;
+    var serves = p.serves >= 1 && p.serves <= 12 ? Math.round(p.serves) : 2;
     var cat = RCATS.indexOf(p.category) >= 0 ? p.category : guessCat(E, S, name, items.map(function (x) { return x.n; }));
+    opt = opt.filter(function (x) { return sp.indexOf(x) < 0; });
     return {
       name: name, cat: cat, base: serves, min: +p.minutes > 0 ? Math.round(+p.minutes) : 0,
-      items: items, sp: sp, extra: extra, steps: (p.steps || []).map(String).filter(Boolean).slice(0, 40),
+      items: items, sp: sp, opt: opt, extra: extra, steps: (p.steps || []).map(String).filter(Boolean).slice(0, 40),
       src: /^https?:\/\//i.test(p.source || '') ? p.source : ''
     };
   }
@@ -157,7 +153,7 @@
   function toRecipe(E, S, dr, id) {
     var name = String(dr.name || '').trim();
     if (!name) return { error: '没有菜名' };
-    var items = {}, s = [], newIngs = {}, bad = '';
+    var items = {}, s = [], o = [], newIngs = {}, bad = '';
     (dr.items || []).forEach(function (it) {
       var n = E.normName(S, it.n);
       if (!n) return;
@@ -173,13 +169,20 @@
       if (!E.info(S, x) && !newIngs[x]) newIngs[x] = { u: '', c: '调料' };
       if (s.indexOf(x) < 0) s.push(x);
     });
+    (dr.opt || []).forEach(function (x) {
+      var n = E.normName(S, x);
+      if (!n) return;
+      if (!E.info(S, n) && !newIngs[n]) newIngs[n] = { u: '', c: '调料' };
+      if (s.indexOf(n) < 0 && o.indexOf(n) < 0) o.push(n);
+    });
     if (!Object.keys(items).length && !s.length) return { error: '至少要有一样食材' };
     Object.keys(newIngs).forEach(function (k) { S.custom.ing[k] = newIngs[k]; });
     return {
       recipe: {
         id: id || 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        name: name, cat: RCATS.indexOf(dr.cat) >= 0 ? dr.cat : '素菜', base: +dr.base || 2, min: +dr.min || 0,
-        items: items, s: s, o: [], steps: (dr.steps || []).slice(), src: dr.src || '', mine: true
+        name: name, cat: RCATS.indexOf(dr.cat) >= 0 ? dr.cat : '素菜',
+        base: Math.min(12, Math.max(1, +dr.base || 2)), min: +dr.min || 0,
+        items: items, s: s, o: o, steps: (dr.steps || []).slice(), src: dr.src || '', mine: true
       }
     };
   }

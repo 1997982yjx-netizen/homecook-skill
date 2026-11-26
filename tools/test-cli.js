@@ -138,6 +138,37 @@ try {
     fs.writeFileSync(badFile, '{broken');
     assert.ok(/用法/.test(main(['match', '--help', '--state', badFile])));
   });
+  test('凑一顿、标签/耗时筛选与拼音搜索', () => {
+    const m = json('meal', '--dishes', '2', '--soup', '0');
+    assert.ok(Array.isArray(m.dishes));
+    assert.strictEqual(typeof m.complete, 'boolean');
+    const quick = json('recipes', '--max-min', '10');
+    quick.forEach((r) => assert.ok((r.minutes || 0) <= 10));
+    const ns = json('match', '--no-spicy');
+    ns.ok.concat(ns.near).forEach((d) => assert.ok(d.tags.indexOf('不辣') >= 0));
+    assert.ok(json('recipes', 'fqcd').some((r) => r.name === '番茄炒蛋'));
+  });
+
+  test('导入菜谱保留可选调料', () => {
+    const rf = path.join(dir, 'opt-recipe.json');
+    fs.writeFileSync(rf, JSON.stringify({ title: '香油蛋羹', ingredients: [{ name: '鸡蛋', amount: '2个' }], seasonings: ['盐'], optional: ['香油'] }));
+    const pre = json('recipe-import', rf);
+    assert.deepStrictEqual(pre.optional, ['香油']);
+    json('recipe-import', rf, '--apply');
+    const saved = json('recipe', '香油蛋羹');
+    assert.ok(saved.seasonings.some((s) => s.name === '香油' && s.optional));
+  });
+
+  test('import --merge 库存相加、同名菜谱覆盖', () => {
+    const before = json('stock').find((x) => x.name === '番茄');
+    const out = path.join(dir, 'merge.json');
+    run('export', out);
+    const r = json('import', out, '--merge');
+    assert.strictEqual(r.merged, true);
+    const after = json('stock').find((x) => x.name === '番茄');
+    assert.ok(after.qty >= before.qty * 2 - 1e-6);
+  });
+
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

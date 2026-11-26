@@ -13,14 +13,16 @@
 
 ## 功能
 
-- **能做啥**：按"几个人吃"换算用量，分成「现在就能做」「只差一两样」「还差得多」三组；能用掉快过期食材的菜排在前面，两天内做过的往后放。
-- **库存**：支持 克 / 两 / 斤 / 千克 换算，可以记到期日；常见叫法自动识别（西红柿记成番茄）。
-- **调料**：盐、生抽、葱姜蒜这类只记"有没有"，不记数量，做菜时也不扣。
+- **能做啥**：按"几个人吃"换算用量，分成「现在就能做」「只差一两样」「还差得多」三组；能用掉快过期食材的菜排在前面，两天内做过的往后放。可以按 `快手 / 不辣 / 免油烟 / 少油低脂` 标签和耗时筛。
+- **凑一顿**：两菜一汤这类组合会把共享食材一起算，避免单看都能做、合起来不够；缺的可以一键加清单。
+- **库存**：支持 克 / 两 / 斤 / 千克 换算，可以记到期日；常见叫法自动识别（西红柿记成番茄）。录入时按食材给出推荐保质期，过期食材会单独提醒。
+- **替代食材**：缺猪里脊但有鸡胸肉这类情况会给出提示。
+- **调料**：盐、生抽、葱姜蒜这类只记"有没有"，不记数量，做菜时也不扣；自定义菜谱可以分必需调料和可选调料。
 - **拍照录入 / 拍小票**：识别出的食材先给你核对，确认后才写入库存。
-- **用 AI 整理菜谱**：粘贴菜谱、笔记文字或上传截图，自动整理成菜名、用料、调料和做法，对照食材字典换算单位，核对后保存成自己的菜谱。
-- **做好了**：按人份从库存扣掉用掉的食材，网页上 6 秒内可以撤销。
+- **用 AI 整理菜谱**：粘贴菜谱、笔记文字或上传截图，自动整理成菜名、用料、调料和做法，对照食材字典换算单位，核对后保存成自己的菜谱（支持 1–12 人份）。
+- **做好了**：按人份从库存扣掉用掉的食材，网页上 6 秒内可以撤销；步骤里有时间的可以一键计时。
 - **购物清单**：缺的食材一键加入，买到后放回库存。
-- **备份**：导出 / 导入 JSON。
+- **备份**：导出 / 导入 JSON，导入时可选覆盖或增量合并；网页可加到手机主屏幕离线打开（PWA）。
 
 ---
 
@@ -52,9 +54,13 @@ node scripts/cook.js help
 node scripts/cook.js stock add 番茄 4 --exp 3
 node scripts/cook.js stock add 五花肉 1 斤
 node scripts/cook.js match --servings 3
+node scripts/cook.js match --tag 快手,不辣 --max-min 15
+node scripts/cook.js meal --dishes 2 --soup 1 --servings 3
+node scripts/cook.js recipes fqcd            # 拼音首字母也能搜
 node scripts/cook.js recipe 番茄炒蛋
 node scripts/cook.js cook 番茄炒蛋
 node scripts/cook.js shop missing 红烧肉
+node scripts/cook.js import 备份.json --merge
 ```
 
 每个命令加 `--json` 都会输出结构化结果。完整命令见 `help` 或 `SKILL.md`。
@@ -117,6 +123,21 @@ VISION_API_KEY=你的密钥 node server.js
 菜谱整理：`POST /api/recipe-from-note`，JSON `{ "title", "text", "source", "images": ["data:image/jpeg;base64,..."] }`（截图最多 4 张）。返回 `{ "ok": true, "recipe": { "title", "category", "minutes", "serves", "ingredients": [{ "name", "amount" }], "seasonings", "optional", "steps", "source" } }`。和拍照识别共用环境变量和限额（每个 IP 每分钟合计 8 次）。
 
 **如果你把 server.js 部署到公网，任何能打开页面的人都会用你的密钥和额度。** 只在自己的设备或内网里运行，或者在前面加一层登录。
+
+#### 局域网 / 自托管模型（Ollama、LM Studio 等）
+
+页面里直接填写的接口地址只接受 `https://` 和 `http://localhost`、`http://127.0.0.1`，这是为了避免密钥走明文网络被截获。手机和电脑在同一个 Wi-Fi、想用电脑上的 `http://192.168.x.x:11434/v1` 时，这个地址会被拦下。
+
+**推荐做法：让 server.js 代为调用。** 手机打开电脑上运行的页面（同一个 Wi-Fi），页面没填密钥时会自动走 `/api/vision-stock`，密钥和局域网地址都只留在电脑上：
+
+```bash
+VISION_API_KEY=（Ollama 可随便填一个非空值） \
+VISION_API_BASE=http://192.168.x.x:11434/v1 \
+VISION_MODEL=你本地装的模型 \
+node server.js
+```
+
+这样手机只连电脑、电脑再连模型，既不用把局域网地址塞进手机浏览器，也不会有跨域和混合内容问题。公开部署时仍请只在内网使用或加登录。
 
 没配置时，手动添加库存、手动填写菜谱都不受影响。
 
@@ -200,7 +221,9 @@ node tools/check-recipes.js
 <link rel="stylesheet" href="cook.css">
 <div id="cook-app" data-nav="top"></div>
 <script src="recipes.js"></script>          <!-- 数据 -->
+<script src="core/dict-utils.js"></script>  <!-- 食材字典公共工具 -->
 <script src="core/engine.js"></script>      <!-- 匹配引擎 -->
+<script src="core/web-utils.js"></script>   <!-- 网页纯逻辑 -->
 <script src="core/vision-map.js"></script>  <!-- 拍照录入，不需要可以不引 -->
 <script src="core/recipe-draft.js"></script> <!-- AI 整理菜谱，不需要可以不引 -->
 <script src="core/vision.js"></script>      <!-- 拍照录入和 AI 整理菜谱，不需要可以不引 -->
@@ -298,10 +321,14 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 
 ## 匹配规则
 
-- 菜谱用量按人数换算：论个、论根这类向上取整，克和毫升取到 5 的倍数。
-- **现在就能做**：每样食材都够，必需调料都有。可选调料不算在内。
+- 菜谱用量按人数换算：论个、论根这类向上取整，不足一份时允许半份（比如 1 人吃 1 块豆腐只做 0.5 块）；克和毫升取到 5 的倍数。
+- **现在就能做**：每样食材都够，必需调料都有。**可选调料**不算在内，缺了也不影响。
 - **只差一两样**：缺的食材和调料加起来不超过 2 样，并且家里至少有其中一样主料。
 - 排序：先排能用掉 3 天内到期食材的菜，再排用到库存种类多的菜；两天内做过的菜往后放。
+- **凑一顿**：多道菜共享同一批库存，选菜时会把重叠的食材一起算，避免两道菜都显示能做、合起来却不够。
+- **替代食材**：缺某样时，如果家里有字典里登记的替代品（比如缺猪里脊但有鸡胸肉），详情里会提示。
+- **标签**：按耗时、调料和做法自动推断 `快手`（15 分钟内）、`不辣`、`免油烟`、`少油低脂`，可用 `--tag` / `--no-spicy` / `--max-min` 筛选。
+- 已过期的食材会单独提示「已过期，建议检查丢弃」，不再混在「快过期」里。
 
 ## 数据
 
@@ -321,6 +348,8 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 
 库存数量的单位是固定的：论克的食材一律存克数，其他的按食材字典里的单位存。网页导出的备份还可能带 `photos`（成品照片），命令行会原样保留。「AI 接口设置」不在里面。
 
+自定义菜谱里 `s` 是必需调料、`o` 是可选调料（可选调料缺了不影响能做），`base` 支持 1–12 人份，`prep` / `cook` 是可选的备料、烹饪分钟数，`tags` 是可选的自定义标签。`import 文件.json --merge` 会按库存相加、同名菜谱覆盖的方式合并，而不是整体覆盖。`node tools/export-recipes.js 菜谱.json` 可以把内置数据导出成纯 JSON，方便社区贡献菜谱。
+
 ## 目录
 
 | 路径 | 用途 |
@@ -329,14 +358,17 @@ const plan = E.plan(S, { servings: 2 });   // { ok: [...], near: [...], far: [..
 | `scripts/cook.js` | 命令行，skill 调用的就是它 |
 | `recipes.js` | **数据**：食材字典、调料、常见叫法、菜谱。加菜只改这个文件 |
 | `core/engine.js` | 匹配引擎：库存、匹配、扣库存、购物清单，不依赖页面 |
+| `core/dict-utils.js` | 食材字典公共工具：单位、常见重量、名字对照，识图和菜谱草稿共用 |
+| `core/web-utils.js` | 网页纯逻辑：数字校验、备份增量合并、步骤计时识别（可在 Node 单测） |
 | `core/vision-map.js` | 把识图结果对照食材字典，换成库存用的名字和单位 |
 | `core/recipe-draft.js` | 把 AI 整理出的菜谱对照食材字典，换算用量，变成可保存的草稿 |
 | `core/vision.js` | 调用你自己的 AI 接口（拍照识别、整理菜谱：提示词、请求、结果清理） |
 | `index.html` `cook.js` `cook.css` | 网页 |
+| `manifest.json` `sw.js` | 可选 PWA：加到手机主屏幕、离线秒开；只缓存静态文件 |
 | `embed-example.html` | 嵌进别的页面的示例 |
-| `server.js` `server/vision-proxy.js` | 可选：本地服务和 AI 接口代理 |
+| `server.js` `server/vision-proxy.js` | 可选：本地服务和 AI 接口代理（`server.js` 导出 `createServer()` 方便测试） |
 | `images/` | 内置菜谱的成品示意图（AI 生成） |
-| `tools/` | 菜谱检查和测试 |
+| `tools/` | 菜谱检查、单元测试和 `export-recipes.js` 数据导出 |
 
 ## 测试
 
@@ -346,9 +378,11 @@ node tools/test-engine.js
 node tools/test-draft.js
 node tools/test-cli.js
 node tools/test-vision.js
+node tools/test-web.js
+node tools/test-server.js
 ```
 
-测试都不访问网络。
+测试都不访问网络。`npm test` 会把这些全部跑一遍（CI 在 Node 18 / 22 上跑）。
 
 ## 许可
 

@@ -337,3 +337,7 @@ html.ck-lock, html.ck-lock body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .ck *, .ck *::before, .ck *::after { transition: none !important; }
 }
+
+/* 步骤里的计时按钮：不抢戏，点一下开始倒计时 */
+.ck .ck-timer { margin-left: 6px; padding: 1px 8px; font: inherit; font-size: 12px; color: var(--ck-rim); background: var(--ck-rim-soft); border: 0; border-radius: 999px; cursor: pointer; }
+.ck .ck-timer:disabled { color: var(--ck-ink); background: var(--ck-line); cursor: default; }

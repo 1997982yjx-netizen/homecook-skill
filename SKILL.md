@@ -20,9 +20,10 @@ node <本 skill 目录>/scripts/cook.js <命令> [参数] --json
 
 | 用户想要 | 命令 |
 | --- | --- |
-| 今天能做什么 | `match`（加 `--servings 3` 按 3 人份；`--cat 汤` 只看汤；`--all` 连差得多的也列出） |
+| 今天能做什么 | `match`（加 `--servings 3` 按 3 人份；`--cat 汤` 只看汤；`--all` 连差得多的也列出；`--tag 快手,不辣`、`--no-spicy`、`--max-min 15` 按标签/口味/耗时筛） |
+| 凑一桌菜（多菜共享库存） | `meal --dishes 2 --soup 1 --servings 3`（自动避开共享食材不够的组合，优先用快过期的） |
 | 某道菜怎么做、缺什么 | `recipe 番茄炒蛋 --servings 3` |
-| 有哪些菜谱 | `recipes`（可加 `--cat 荤菜`） |
+| 有哪些菜谱 | `recipes [搜索词]`（可按菜名、食材、调料、拼音首字母搜；`--cat`、`--tag`、`--max-min`、`--sort time`） |
 | 看库存 / 概况 | `stock`、`status` |
 | 记下买了什么 | `stock add 番茄 4`；论克的可以写 `stock add 五花肉 1 斤`；有保质期加 `--exp 3`（天）或 `--exp 2026-10-25`；改成实际数量而不是累加加 `--set` |
 | 字典里没有的新食材 | `stock add 秋葵 8 --unit 根 --cat 蔬菜`（单位和分类的可选值见报错提示） |
@@ -32,6 +33,7 @@ node <本 skill 目录>/scripts/cook.js <命令> [参数] --json
 | 买回来了 | `shop bought`（全部）或 `shop bought 青椒 五花肉` |
 | 默认几人吃 | `servings 3` |
 | 删掉自己加的菜谱 | `recipe-remove 菜名` |
+| 合并别人的备份 | `import 备份.json --merge`（库存相加、同名菜谱覆盖；不加 `--merge` 是整体覆盖） |
 
 食材名可以用常见叫法（西红柿、土豆丝里的土豆等），命令会自动换成字典里的名字。命令出错时退出码为 2，`--json` 下返回 `{ "error": "原因" }`，按原因提示用户或修正参数后重试。
 
@@ -56,7 +58,7 @@ node <本 skill 目录>/scripts/cook.js <命令> [参数] --json
      "seasonings": ["醋", "盐", "干辣椒"], "optional": ["花椒"],
      "steps": ["土豆切丝泡水", "热油炒香干辣椒", "下土豆丝快炒，淋醋加盐出锅"] }
    ```
-   `category` 只能是 荤菜 / 素菜 / 蛋类 / 汤 / 主食；`amount` 保留原文写法（"2个""150克""半斤""适量"）；调料不要放进 `ingredients`；做法一句一步。
+   `category` 只能是 荤菜 / 素菜 / 蛋类 / 汤 / 主食；`serves` 支持 1 到 12 人份；`seasonings` 是必需调料，`optional` 是可选调料（缺了不影响能做）；`amount` 保留原文写法（"2个""150克""半斤""适量"）；调料不要放进 `ingredients`；做法一句一步。
 3. 先预览：`recipe-import 文件.json --json`。它会对照食材字典换算单位（比如 300 克番茄估成 2 个），有 `note` 的行需要核对；`qty` 为 null 的，问清用量后改 JSON 里的 `amount`，再预览一次。
 4. 把整理结果告诉用户，确认后运行 `recipe-import 文件.json --apply` 保存。同名的"我的菜谱"会被更新；和内置菜谱重名时请用户换个名字。
 
