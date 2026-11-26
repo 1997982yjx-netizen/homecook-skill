@@ -49,6 +49,23 @@ test('青菜按克记，个数会换成克', () => {
   assert.strictEqual(rows[0].name, '青菜');
   assert.strictEqual(rows[0].unit, '克');
   assert.ok(rows[0].qty > 0);
+  const rowsWithQty = V.mapItems([{ name: '青菜', count: 1, qty: 1, unit: '把' }], dict);
+  assert.strictEqual(rowsWithQty[0].qty, 200);
+  assert.ok(/请改一下/.test(rowsWithQty[0].note));
+});
+
+test('升换算成毫升、自定义食材子串匹配、新食材不同单位不乱加', () => {
+  const cola = V.mapItems([{ name: '可乐', qty: 1.5, unit: '升' }], dict);
+  assert.strictEqual(cola[0].qty, 1500);
+  assert.strictEqual(cola[0].unit, '毫升');
+  const d2 = Object.assign({}, dict, { customIng: { '杏鲍菇': { u: '克', c: '蔬菜' } } });
+  const m = V.matchName('有机杏鲍菇', d2);
+  assert.deepStrictEqual(m, { name: '杏鲍菇', known: true });
+  const mixed = V.mapItems([
+    { name: '秋葵', qty: 500, unit: '克' },
+    { name: '秋葵', qty: 1, unit: '包' }
+  ], dict);
+  assert.strictEqual(mixed.length, 2);
 });
 
 test('调料不进库存行', () => {
@@ -259,8 +276,65 @@ async function extra() {
     assert.strictEqual(note.status, 200);
     const empty = await callHandler('POST', JSON.stringify({}), '/api/recipe-from-note', P.handleRecipeFromNote);
     assert.strictEqual(empty.status, 400);
+    const nullBody = await callHandler('POST', 'null');
+    assert.strictEqual(nullBody.status, 400);
+    const objText = await callHandler('POST', JSON.stringify({ text: {} }), '/api/recipe-from-note', P.handleRecipeFromNote);
+    assert.strictEqual(objText.status, 400);
     n += 1;
-    console.log('  ✓ 代理的菜谱整理接口可用，空内容返回 400');
+    console.log('  ✓ 代理的菜谱整理接口可用，空内容/非法请求体返回 400');
+
+    // 读取响应体阶段超时应映射为 504，而不是未处理的 AbortError；支持数组 content
+    await assert.rejects(
+      A.recognize({ key: 'k', timeout: 30 }, 'data:image/jpeg;base64,xx', 'stock', (url, init) => Promise.resolve({
+        status: 200, ok: true,
+        text: () => new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        })
+      })),
+      (e) => e.status === 504 && /超时/.test(e.message)
+    );
+    const arrContent = await A.recognize({ key: 'k' }, 'data:image/jpeg;base64,xx', 'stock', fakeFetch(200, {
+      choices: [{ message: { content: [{ type: 'text', text: '{"items":[{"name":"土豆","qty":2,"unit":"个"}]}' }] } }]
+    }));
+    assert.strictEqual(arrContent[0].name, '土豆');
+    assert.strictEqual(A.config({ timeout: -10 }).timeout, 45000);
+    n += 1;
+    console.log('  ✓ 读取响应体超时返回 504，兼容数组格式 content，非法 timeout 回退默认');
+
+    // 真实 HTTP 请求超限返回完整 413 JSON（不因提前 destroy 导致 ECONNRESET）
+    const http = require('http');
+    await new Promise((resolve, reject) => {
+      const srv = http.createServer((req, res) => P.handleVisionStock(req, res));
+      srv.listen(0, '127.0.0.1', () => {
+        const big = Buffer.alloc(2 * 1024 * 1024 + 4096, 'a');
+        const req = http.request({
+          hostname: '127.0.0.1', port: srv.address().port, path: '/api/vision-stock',
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': big.length }
+        }, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => {
+            srv.close(() => {
+              try {
+                assert.strictEqual(res.statusCode, 413);
+                const parsed = JSON.parse(body);
+                assert.strictEqual(parsed.ok, false);
+                assert.ok(/太大/.test(parsed.error));
+                resolve();
+              } catch (err) { reject(err); }
+            });
+          });
+        });
+        req.on('error', (err) => srv.close(() => reject(err)));
+        req.end(big);
+      });
+    });
+    n += 1;
+    console.log('  ✓ 超限请求体返回完整 413 JSON，不会触发连接重置');
     delete process.env.VISION_API_KEY;
   } finally {
     if (prev !== undefined) process.env.VISION_API_KEY = prev;

@@ -67,6 +67,9 @@
     dict.seasonings.forEach(function (k) {
       if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k;
     });
+    Object.keys(dict.customIng || {}).forEach(function (k) {
+      if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k;
+    });
     return best ? { name: best, known: true } : { name: s, known: false };
   }
 
@@ -74,20 +77,23 @@
     var count = num(item.count);
     var qty = num(item.qty);
     var g = gramsOf(item);
+    var rawUnit = String(item.unit || '').trim();
+    var lowUnit = rawUnit.toLowerCase();
     if (unit === '克') {
       if (g) return Math.max(1, Math.round(g));
       if (count && AVG_G[name]) return Math.max(1, Math.round(count * AVG_G[name]));
-      if (qty) return Math.max(1, Math.round(qty));
+      if (qty && (!rawUnit || WEIGHT[rawUnit])) return Math.max(1, Math.round(qty));
       return null;
     }
     if (unit === '毫升') {
+      if (qty && (rawUnit === '升' || lowUnit === 'l')) return Math.max(1, Math.round(qty * 1000));
+      if (qty && (rawUnit === '毫升' || lowUnit === 'ml')) return Math.max(1, Math.round(qty));
       if (g) return Math.max(1, Math.round(g));
-      if (qty && (item.unit === '毫升' || String(item.unit).toLowerCase() === 'ml')) return Math.max(1, Math.round(qty));
-      if (qty) return Math.max(1, Math.round(qty));
+      if (qty && !rawUnit) return Math.max(1, Math.round(qty));
       return null;
     }
     if (count) return r2(count);
-    if (qty && !WEIGHT[String(item.unit || '')] && canonUnit(item.unit) !== '克' && canonUnit(item.unit) !== '毫升') return r2(qty);
+    if (qty && !WEIGHT[rawUnit] && canonUnit(rawUnit) !== '克' && canonUnit(rawUnit) !== '毫升') return r2(qty);
     if (g && AVG_G[name]) return r2(Math.max(0.5, Math.round(g / AVG_G[name] * 2) / 2));
     if (qty) return r2(qty);
     return null;
@@ -107,8 +113,6 @@
     if (!qty) {
       qty = inf ? (unit === '克' || unit === '毫升' ? 200 : 1) : 1;
       note = note || '数量看不太清，先按这个填，请改一下';
-    } else if (!inf && nameRaw && nameRaw !== m.name) {
-      note = note || '新食材，保存时会加进字典';
     } else if (!inf) {
       note = note || '新食材，保存时会加进字典';
     } else if (nameRaw && nameRaw !== m.name && nameRaw.replace(/\s+/g, '') !== m.name) {
@@ -138,13 +142,14 @@
     (Array.isArray(rawItems) ? rawItems : []).forEach(function (raw) {
       var row = mapItem(raw, ctx);
       if (!row) return;
-      var prev = byName[row.kind + ':' + row.name];
+      var key = row.kind === 'stock' ? row.kind + ':' + row.name + ':' + row.unit : row.kind + ':' + row.name;
+      var prev = byName[key];
       if (prev && row.kind === 'stock') {
         if (typeof prev.qty === 'number' && typeof row.qty === 'number') prev.qty = r2(prev.qty + row.qty);
         return;
       }
       if (prev && row.kind === 'spice') return;
-      byName[row.kind + ':' + row.name] = row;
+      byName[key] = row;
       out.push(row);
     });
     return out;

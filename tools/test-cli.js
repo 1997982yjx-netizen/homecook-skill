@@ -101,6 +101,43 @@ try {
     assert.throws(() => run('recipe', '不存在的菜'), /没找到/);
     assert.throws(() => run('nope'), /没有「nope」/);
   });
+
+  test('边界与参数校验：连写单位、非法数量/日期、值型参数、空清单操作与缺 steps 菜谱', () => {
+    assert.strictEqual(json('stock', 'add', '五花肉', '1斤', '--set').qty, 500);
+    assert.strictEqual(json('stock', 'add', '五花肉', '250g').qty, 750);
+    assert.throws(() => run('stock', 'add', '番茄', '2abc'), /换算不了/);
+    assert.throws(() => run('stock', 'add', '番茄', '-2'), /写法/);
+    assert.throws(() => run('stock', 'add', '番茄', '4', '--exp', '2026-02-31'), /--exp/);
+    assert.throws(() => main(['status', '--state']), /--state/);
+
+    assert.throws(() => run('shop', 'add', '番茄', 'abc'), /数量/);
+    assert.throws(() => run('shop', 'add', '番茄', '-5'), /数量/);
+    const sp = json('shop', 'add', '盐', '1', '瓶');
+    assert.strictEqual(sp.unit, null);
+    run('shop', 'clear');
+    run('shop', 'add', '丝瓜', '3', '--unit', '根');
+    run('shop', 'bought');
+    assert.strictEqual(json('stock').find((x) => x.name === '丝瓜').unit, '根');
+    assert.throws(() => run('shop', 'remove'), /写法/);
+    assert.throws(() => run('recipe-remove'), /写法/);
+
+    const emptyItems = path.join(dir, 'empty-items.json');
+    fs.writeFileSync(emptyItems, JSON.stringify([{ name: '购物袋', qty: 1 }]));
+    assert.strictEqual(json('import-items', emptyItems, '--apply').applied, false);
+
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.custom.recipes.push({ id: 'u_nostep', name: '简略菜', items: { '番茄': 1 } });
+    fs.writeFileSync(file, JSON.stringify(raw));
+    assert.strictEqual(json('recipe', '简略菜').name, '简略菜');
+
+    const badBackup = path.join(dir, 'bad-backup.json');
+    fs.writeFileSync(badBackup, JSON.stringify({ stock: [] }));
+    assert.throws(() => run('import', badBackup), /备份/);
+
+    const badFile = path.join(dir, 'broken.json');
+    fs.writeFileSync(badFile, '{broken');
+    assert.ok(/用法/.test(main(['match', '--help', '--state', badFile])));
+  });
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

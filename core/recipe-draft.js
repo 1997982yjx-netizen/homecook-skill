@@ -40,15 +40,15 @@
     if (/^(适量|少许|少量|若干|一点|随意|按口味|适当|酌量|根据口味|几)/.test(s)) return { num: null, unit: '', kind: 'vague', raw: raw };
 
     var num = NaN, rest = s, m;
-    if ((m = s.match(/^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)/))) { num = +m[1] / +m[2]; rest = s.slice(m[0].length); }
+    if ((m = s.match(/^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)/))) { num = +m[2] > 0 ? +m[1] / +m[2] : NaN; rest = s.slice(m[0].length); }
     else if ((m = s.match(/^(\d+(?:\.\d+)?)(?:[-~～到至](\d+(?:\.\d+)?))?/))) { num = +m[1]; rest = s.slice(m[0].length); }
     else if ((m = s.match(/^半/))) { num = 0.5; rest = s.slice(1); }
     else if ((m = s.match(/^([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两俩三四五六七八九])/))) {
       num = cnInt(m[1] === '俩' ? '两' : m[1]); rest = s.slice(m[0].length);
-      var range = rest.match(/^[到至-]?([一二两三四五六七八九])/);
+      var range = rest.match(/^[到至~～-]?([一二两三四五六七八九])/);
       if (range && !/^两/.test(rest)) rest = rest.slice(range[0].length);
     }
-    if (isNaN(num)) return { num: null, unit: '', kind: 'none', raw: raw };
+    if (!isFinite(num) || !(num > 0)) return { num: null, unit: '', kind: 'none', raw: raw };
 
     var unitMatch = rest.match(/^(kg|g|ml|l|千克|公斤|克|斤|两|毫升|升|汤匙|茶匙|大勺|小勺|小碗|勺|杯|个|只|颗|枚|粒|根|条|块|朵|包|袋|碗|瓶|盒|把|棵|头|片|瓣|节|段|张)/i);
     var unit = unitMatch ? unitMatch[1].toLowerCase() : '';
@@ -74,7 +74,8 @@
     n = E.normName(S, t);
     if (t && E.info(S, n)) return { name: n, known: true };
     var best = '';
-    Object.keys(E.ingredients).forEach(function (k) { if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k; });
+    var dictKeys = Object.keys(E.ingredients).concat(E.seasonings || [], Object.keys((S && S.custom && S.custom.ing) || {}));
+    dictKeys.forEach(function (k) { if (k.length >= 2 && s.indexOf(k) >= 0 && k.length > best.length) best = k; });
     return best ? { name: best, known: true } : { name: s, known: false };
   }
 
@@ -105,9 +106,13 @@
       if (m.known) {
         var u = E.unitOf(S, m.name);
         if (u === '克' || u === '毫升') {
-          if (a.kind === 'weight') row.q = Math.round(a.grams);
-          else if (a.kind === 'volume') row.q = Math.round(a.ml);
-          else row.note = '原文是"' + raw + '"，请换成' + u + '数';
+          if (a.kind === 'weight') {
+            row.q = Math.max(1, Math.round(a.grams));
+            if (u === '毫升') row.note = '原文是"' + raw + '"，按克近似换算为毫升，请核对';
+          } else if (a.kind === 'volume') {
+            row.q = Math.max(1, Math.round(a.ml));
+            if (u === '克') row.note = '原文是"' + raw + '"，按毫升近似换算为克，请核对';
+          } else row.note = '原文是"' + raw + '"，请换成' + u + '数';
         } else if (a.kind === 'count' && a.num !== null) {
           row.q = a.num;
           if (a.unit && a.unit !== u && a.unit !== '个') row.note = '原文是"' + raw + '"，单位是' + u + '，请核对';
@@ -120,11 +125,20 @@
         if (String(ing.name).replace(/\s+/g, '') !== m.name && !row.note) row.note = '原文写的是"' + ing.name + '"';
       } else {
         row.u = a.kind === 'weight' ? '克' : a.kind === 'volume' ? '毫升' : (UNITS.indexOf(a.unit) >= 0 ? a.unit : '个');
-        row.q = a.kind === 'weight' ? Math.round(a.grams) : a.kind === 'volume' ? Math.round(a.ml) : a.num;
+        row.q = a.kind === 'weight' ? Math.max(1, Math.round(a.grams)) : a.kind === 'volume' ? Math.max(1, Math.round(a.ml)) : a.num;
         row.note = '新食材，保存时会加进字典';
       }
       var prev = byName[m.name];
-      if (prev) { if (typeof prev.q === 'number' && typeof row.q === 'number') prev.q = r2(prev.q + row.q); return; }
+      if (prev) {
+        if (typeof prev.q === 'number' && typeof row.q === 'number') prev.q = r2(prev.q + row.q);
+        else if (typeof prev.q !== 'number' && typeof row.q === 'number') {
+          prev.q = row.q;
+          prev.note = prev.note || row.note;
+        } else if (typeof prev.q === 'number' && typeof row.q !== 'number' && row.note) {
+          prev.note = prev.note ? prev.note + '；' + row.note : row.note;
+        }
+        return;
+      }
       byName[m.name] = row;
       items.push(row);
     });
@@ -135,7 +149,7 @@
     return {
       name: name, cat: cat, base: serves, min: +p.minutes > 0 ? Math.round(+p.minutes) : 0,
       items: items, sp: sp, extra: extra, steps: (p.steps || []).map(String).filter(Boolean).slice(0, 40),
-      src: /^https?:\/\//.test(p.source || '') ? p.source : ''
+      src: /^https?:\/\//i.test(p.source || '') ? p.source : ''
     };
   }
 
@@ -143,25 +157,27 @@
   function toRecipe(E, S, dr, id) {
     var name = String(dr.name || '').trim();
     if (!name) return { error: '没有菜名' };
-    var items = {}, s = [], bad = '';
+    var items = {}, s = [], newIngs = {}, bad = '';
     (dr.items || []).forEach(function (it) {
       var n = E.normName(S, it.n);
       if (!n) return;
       if (E.isSpice(S, n)) { if (s.indexOf(n) < 0) s.push(n); return; }
       var q = parseFloat(it.q);
-      if (!(q > 0)) { bad = n; return; }
-      if (!E.info(S, n)) S.custom.ing[n] = { u: UNITS.indexOf(it.u) >= 0 ? it.u : '个', c: '其他' };
-      items[n] = (items[n] || 0) + q;
+      if (!(isFinite(q) && q > 0)) { if (!bad) bad = n; return; }
+      if (!E.info(S, n) && !newIngs[n]) newIngs[n] = { u: UNITS.indexOf(it.u) >= 0 ? it.u : '个', c: '其他' };
+      items[n] = r2((items[n] || 0) + q);
     });
     if (bad) return { error: '「' + bad + '」的用量要填数字' };
     (dr.sp || []).concat(dr.extra || []).forEach(function (x) {
-      if (!E.info(S, x)) S.custom.ing[x] = { u: '', c: '调料' };
+      if (!x) return;
+      if (!E.info(S, x) && !newIngs[x]) newIngs[x] = { u: '', c: '调料' };
       if (s.indexOf(x) < 0) s.push(x);
     });
     if (!Object.keys(items).length && !s.length) return { error: '至少要有一样食材' };
+    Object.keys(newIngs).forEach(function (k) { S.custom.ing[k] = newIngs[k]; });
     return {
       recipe: {
-        id: id || 'u' + Date.now().toString(36),
+        id: id || 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: name, cat: RCATS.indexOf(dr.cat) >= 0 ? dr.cat : '素菜', base: +dr.base || 2, min: +dr.min || 0,
         items: items, s: s, o: [], steps: (dr.steps || []).slice(), src: dr.src || '', mine: true
       }

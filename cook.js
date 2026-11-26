@@ -45,8 +45,19 @@
   function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function addDays(n) { var d = today0(); d.setDate(d.getDate() + n); return ymd(d); }
   function parseYmd(s) {
+    if (CE && CE.parseYmd) return CE.parseYmd(s);
     if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-    var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]);
+    var p = s.split('-'), y = +p[0], m = +p[1], day = +p[2];
+    var d = new Date(y, m - 1, day);
+    return d.getFullYear() === y && d.getMonth() === m - 1 && d.getDate() === day ? d : null;
+  }
+  function parsePosNum(v) {
+    var s = String(v == null ? '' : v).trim()
+      .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/．/g, '.');
+    if (!/^\d+(?:\.\d+)?$/.test(s)) return NaN;
+    var n = parseFloat(s);
+    return isFinite(n) && n > 0 ? n : NaN;
   }
   function daysLeft(exp) { var d = parseYmd(exp); return d ? Math.round((d - today0()) / 864e5) : null; }
   function expLabel(n) {
@@ -187,7 +198,7 @@
     var store = makeStore(opts);
     var S = E.normalize(store.load());
     var ui = { photoFor: null, formPhoto: null, impShots: [], noteGen: 0, quickOpen: false, tab: opts.tab || 'match', rendered: null, filter: '全部', rfilter: '全部', showFar: false, q: '', rq: '', sheet: null, sheetServ: 2, opener: null, scanGen: 0, scanKind: 'stock' };
-    var toastTimer = null, toastFn = null, cleanups = [];
+    var toastTimer = null, toastFn = null, cleanups = [], destroyed = false;
 
     el.classList.add('ck');
     el.setAttribute('data-nav', opts.nav === 'top' ? 'top' : 'bottom');
@@ -576,7 +587,7 @@
         }
         h += '<div class="ck-sh-meta"><span>' + esc(r.cat) + '</span>' + (r.min ? '<span>大约 ' + r.min + ' 分钟</span>' : '') +
           (last ? '<span>上次做是' + agoLabel(last) + '</span>' : '') +
-          (r.src && /^https?:\/\//.test(r.src) ? '<a class="ck-src" href="' + esc(r.src) + '" target="_blank" rel="noopener noreferrer">原菜谱</a>' : '') + '</div>';
+          (r.src && /^https?:\/\//i.test(r.src) ? '<a class="ck-src" href="' + esc(r.src) + '" target="_blank" rel="noopener noreferrer">原菜谱</a>' : '') + '</div>';
         h += '<div class="ck-sh-srv"><span>按</span>' + srvStepper(n, 'sh-srv') + '<span>人份算</span>' +
           '<span style="margin-left:auto" class="' + (a.status === 'ok' ? 'ck-ok-t' : 'ck-miss-t') + '">' +
           (a.status === 'ok' ? '都够' : '缺 ' + a.mc + ' 样') + '</span></div>';
@@ -802,7 +813,7 @@
       var shots = ui.impShots || [];
       var gen = ui.noteGen;
       function msg(t, cls) { msgEl.textContent = t; msgEl.className = 'ck-imp-msg' + (cls ? ' ' + cls : ''); }
-      function live() { return gen === ui.noteGen && ui.sheet && ui.sheet.kind === 'recipe-form'; }
+      function live() { return !destroyed && gen === ui.noteGen && ui.sheet && ui.sheet.kind === 'recipe-form'; }
       function fail(t, setup) {
         if (!live()) return;
         if (setup) { openSheet('recipe-form', { impText: text, impMsg: t, impErr: true, impSetup: true }); return; }
@@ -818,7 +829,7 @@
         if (!dr.items.length && !dr.steps.length) { msg('没认出用料和做法。把文字贴全一点，或换张清楚的截图', 'is-err'); return; }
         openSheet('recipe-form', { draft: dr, impText: text });
       }
-      var route = visionRoute();
+      var route = visionRoute('recipe');
       if (!route) { fail(NOTE_SETUP, true); return; }
       btn.disabled = true; btn.textContent = '整理中…'; msg('正在整理成菜谱…');
       function doneBtn() { if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = '整理'; } }
@@ -852,9 +863,10 @@
           });
         });
       }, Promise.resolve()).then(function () {
+        if (destroyed) return;
         refreshImpShots();
         if (files.length > room) toast('最多 4 张截图，多的没加上');
-      }, function () { toast('有的截图读不了，换一张试试'); });
+      }, function () { if (!destroyed) toast('有的截图读不了，换一张试试'); });
     }
 
     function ingRow(name, q, unitHint, note) {
@@ -884,13 +896,13 @@
       var gen = ui.scanGen;
       var scanKind = ui.scanKind === 'receipt' ? 'receipt' : 'stock';
       compressPhoto(file).then(function (ph) {
-        if (gen !== ui.scanGen) return;
+        if (destroyed || gen !== ui.scanGen) return;
         openSheet('stock-scan', {
           status: 'loading', preview: ph.thumb, src: ui.scanSrc || 'camera',
           scanKind: scanKind, mode: 'add', lines: [], err: ''
         });
         recognizeStockPhoto(ph.full, gen, scanKind);
-      }, function () { toast('这张照片读不了，换一张试试'); });
+      }, function () { if (!destroyed) toast('这张照片读不了，换一张试试'); });
     }
 
     /* ---------- 识图接口（用户自己的） ---------- */
@@ -906,9 +918,10 @@
       } catch (e) { return false; }
     }
     // 自己填了密钥就直接调；没填时，如果页面是从服务器打开的，就试试 server.js 的代理
-    function visionRoute() {
+    function visionRoute(kind) {
       if (visionCfg().key) return 'direct';
-      if (opts.visionProxy || location.protocol !== 'file:') return 'proxy';
+      var hasCustomProxy = kind === 'recipe' ? !!opts.recipeProxy : !!opts.visionProxy;
+      if (hasCustomProxy || location.protocol !== 'file:') return 'proxy';
       return '';
     }
     var NEED_SETUP = '还没设置 AI 接口。点下面的「AI 接口设置」填你自己的接口和密钥，或者改用手加。';
@@ -917,7 +930,7 @@
     function recognizeStockPhoto(dataUrl, gen, scanKind) {
       var receipt = scanKind === 'receipt';
       var mode = receipt ? 'receipt' : 'stock';
-      function live() { return gen === ui.scanGen && ui.sheet && ui.sheet.kind === 'stock-scan'; }
+      function live() { return !destroyed && gen === ui.scanGen && ui.sheet && ui.sheet.kind === 'stock-scan'; }
       function fail(msg, setup) {
         if (!live()) return;
         ui.sheet.args.status = 'review';
@@ -1084,7 +1097,7 @@
       },
       stock: function (f) {
         var name = ui.sheet.args.name;
-        var raw = parseFloat(String(f.qty.value).replace(/[^\d.]/g, ''));
+        var raw = parsePosNum(f.qty.value);
         var factor = 1;
         if (f.unit) WEIGHT.forEach(function (w) { if (w[0] === f.unit.value) factor = w[1]; });
         if (!(raw > 0)) { formErr(f, '数量要填一个大于 0 的数'); return; }
@@ -1117,31 +1130,32 @@
       recipe: function (f) {
         var name = String(f.name.value).trim();
         if (!name) { formErr(f, '先写菜名'); return; }
-        var items = {}, sp = [], bad = '';
+        var items = {}, sp = [], newIngs = {}, bad = '';
         f.querySelectorAll('.ck-irow').forEach(function (row) {
           var n = normName(row.querySelector('[name=in]').value);
           if (!n) return;
-          var qv = parseFloat(String(row.querySelector('[name=iq]').value).replace(/[^\d.]/g, ''));
           if (isSpice(n)) { if (sp.indexOf(n) < 0) sp.push(n); return; }
-          if (!(qv > 0)) { bad = n; return; }
-          if (!info(n)) S.custom.ing[n] = { u: row.querySelector('[name=iu]').value, c: '其他' };
-          items[n] = (items[n] || 0) + qv;
+          var qv = parsePosNum(row.querySelector('[name=iq]').value);
+          if (!(qv > 0)) { if (!bad) bad = n; return; }
+          if (!info(n) && !newIngs[n]) newIngs[n] = { u: row.querySelector('[name=iu]').value, c: '其他' };
+          items[n] = r2((items[n] || 0) + qv);
         });
-        if (bad) { formErr(f, '「' + bad + '」的用量要填数字'); return; }
+        if (bad) { formErr(f, '「' + bad + '」的用量要填大于 0 的数字'); return; }
         f.querySelectorAll('input[name=sp]:checked').forEach(function (x) {
-          if (!info(x.value)) S.custom.ing[x.value] = { u: '', c: '调料' }; // 导入时识别出的新调料
+          if (!info(x.value) && !newIngs[x.value]) newIngs[x.value] = { u: '', c: '调料' }; // 导入时识别出的新调料
           if (sp.indexOf(x.value) < 0) sp.push(x.value);
         });
         if (!Object.keys(items).length && !sp.length) { formErr(f, '至少填一样食材'); return; }
+        Object.keys(newIngs).forEach(function (k) { S.custom.ing[k] = newIngs[k]; });
         var rec = {
-          id: f.querySelector('[name=rid]').value || 'u' + Date.now().toString(36),
+          id: f.querySelector('[name=rid]').value || 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           name: name,
           cat: radioVal(f, 'cat') || '素菜',
           base: +radioVal(f, 'base') || 2,
           min: parseInt(f.min.value, 10) || 0,
           items: items, s: sp, o: [],
           steps: String(f.steps.value).split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
-          src: /^https?:\/\//.test(f.querySelector('[name=src]').value) ? f.querySelector('[name=src]').value : '',
+          src: /^https?:\/\//i.test(f.querySelector('[name=src]').value) ? f.querySelector('[name=src]').value : '',
           mine: true
         };
         var fp = ui.formPhoto;
@@ -1166,17 +1180,15 @@
       },
       'stock-scan': function (f) {
         var mode = radioVal(f, 'scan-mode') || (ui.sheet && ui.sheet.args.mode) || 'add';
-        var added = 0, spices = 0, bad = '';
-        var snap = JSON.stringify({ stock: S.stock, spices: S.spices, custom: S.custom });
+        var pendingSpices = [], pendingStock = [], newIngs = {}, bad = '';
         f.querySelectorAll('.ck-scanrow').forEach(function (row) {
           if (row.getAttribute('data-kind') === 'spice') {
             var on = row.querySelector('[name=sk]');
-            var sn = row.getAttribute('data-n') || '';
-            sn = normName(sn);
+            var sn = normName(row.getAttribute('data-n') || '');
             if (on && on.checked && sn) {
               if (info(sn) && info(sn).c !== '调料' && !isSpice(sn)) return;
-              if (!info(sn)) S.custom.ing[sn] = { u: '', c: '调料' };
-              if (!hasSpice(sn)) { S.spices.push(sn); spices++; }
+              if (!info(sn) && !newIngs[sn]) newIngs[sn] = { u: '', c: '调料' };
+              if (!hasSpice(sn) && pendingSpices.indexOf(sn) < 0) pendingSpices.push(sn);
             }
             return;
           }
@@ -1185,22 +1197,25 @@
           var n = normName(inp.value);
           if (!n) return;
           if (isSpice(n)) {
-            if (!hasSpice(n)) { S.spices.push(n); spices++; }
+            if (!hasSpice(n) && pendingSpices.indexOf(n) < 0) pendingSpices.push(n);
             return;
           }
-          var qv = parseFloat(String(row.querySelector('[name=sq]').value).replace(/[^\d.]/g, ''));
-          if (!(qv > 0)) { bad = n; return; }
-          if (!info(n)) {
+          var qv = parsePosNum(row.querySelector('[name=sq]').value);
+          if (!(qv > 0)) { if (!bad) bad = n; return; }
+          if (!info(n) && !newIngs[n]) {
             var u = row.querySelector('[name=su]').value;
-            S.custom.ing[n] = { u: UNITS.indexOf(u) >= 0 ? u : '个', c: '其他' };
+            newIngs[n] = { u: UNITS.indexOf(u) >= 0 ? u : '个', c: '其他' };
           }
-          addStock(n, qv, null, mode);
-          added++;
+          pendingStock.push({ n: n, q: qv });
         });
         if (bad) { formErr(f, '「' + bad + '」的数量要填大于 0 的数'); return; }
-        if (!added && !spices) { formErr(f, '至少留一样再放进库存'); return; }
+        if (!pendingStock.length && !pendingSpices.length) { formErr(f, '至少留一样再放进库存'); return; }
+        var snap = JSON.stringify({ stock: S.stock, spices: S.spices, custom: S.custom });
+        Object.keys(newIngs).forEach(function (k) { S.custom.ing[k] = newIngs[k]; });
+        pendingSpices.forEach(function (sn) { if (!hasSpice(sn)) S.spices.push(sn); });
+        pendingStock.forEach(function (it) { addStock(it.n, it.q, null, mode); });
         commit(); closeSheet(); render();
-        toast('已放入 ' + (added + spices) + ' 样', '撤销', function () {
+        toast('已放入 ' + (pendingStock.length + pendingSpices.length) + ' 样', '撤销', function () {
           var o = JSON.parse(snap); S.stock = o.stock; S.spices = o.spices; S.custom = o.custom; commit(); render();
         });
       }
@@ -1426,20 +1441,28 @@
       if (!file) return;
       var reader = new FileReader();
       reader.onload = function () {
+        if (destroyed) return;
         var data;
         try { data = JSON.parse(reader.result); } catch (e) { toast('这个文件不是有效的备份'); return; }
-        if (!data || typeof data !== 'object' || !data.stock) { toast('这个文件不是做饭模块的备份'); return; }
+        if (!data || typeof data !== 'object' || !data.stock || typeof data.stock !== 'object' || Array.isArray(data.stock)) { toast('这个文件不是做饭模块的备份'); return; }
         if (!window.confirm('导入会覆盖现在的库存、调料、清单和自己的菜谱，继续？')) return;
         S = E.normalize(data);
-        if (data.photos && typeof data.photos === 'object') {
+        var nextPhotos = {};
+        if (data.photos && typeof data.photos === 'object' && !Array.isArray(data.photos)) {
           Object.keys(data.photos).forEach(function (rid) {
             var ph = data.photos[rid];
             if (ph && /^data:image\//.test(ph.full || '') && /^data:image\//.test(ph.thumb || '')) {
-              photos[rid] = { full: ph.full, thumb: ph.thumb };
-              PhotoDB.set(photoPrefix + rid, photos[rid]);
+              nextPhotos[rid] = { full: ph.full, thumb: ph.thumb };
             }
           });
         }
+        Object.keys(photos).forEach(function (rid) {
+          if (!nextPhotos[rid]) { delete photos[rid]; PhotoDB.del(photoPrefix + rid); }
+        });
+        Object.keys(nextPhotos).forEach(function (rid) {
+          photos[rid] = nextPhotos[rid];
+          PhotoDB.set(photoPrefix + rid, photos[rid]);
+        });
         commit(); render(); toast('导入好了');
       };
       reader.readAsText(file);
@@ -1449,13 +1472,14 @@
       var file = photoEl.files && photoEl.files[0], target = ui.photoFor;
       if (!file || !target) return;
       compressPhoto(file).then(function (ph) {
+        if (destroyed) return;
         if (target === 'form') { ui.formPhoto = ph; refreshFormPhoto(); return; }
         photos[target] = ph;
         PhotoDB.set(photoPrefix + target, ph);
         if (ui.sheet && ui.sheet.kind === 'recipe') renderSheet();
         renderBody();
         toast('成品照片已保存');
-      }, function () { toast('这张照片读不了，换一张试试'); });
+      }, function () { if (!destroyed) toast('这张照片读不了，换一张试试'); });
     }
     function onImgError(e) {
       var t = e.target;
@@ -1507,6 +1531,7 @@
 
     render();
     PhotoDB.all(photoPrefix).then(function (all) {
+      if (destroyed) return;
       var keys = Object.keys(all);
       if (!keys.length) return;
       keys.forEach(function (k) { photos[k.slice(photoPrefix.length)] = all[k]; });
@@ -1519,6 +1544,7 @@
       setData: function (d) { S = E.normalize(d); commit(); render(); },
       go: function (tab) { if (VIEWS[tab]) { ui.tab = tab; render(); } },
       destroy: function () {
+        destroyed = true;
         cleanups.forEach(function (fn) { fn(); });
         clearTimeout(toastTimer);
         document.documentElement.classList.remove('ck-lock');

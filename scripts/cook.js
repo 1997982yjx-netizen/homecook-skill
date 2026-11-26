@@ -56,9 +56,14 @@ function load(file) {
 function save(file, S, extra) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const out = Object.assign({}, S, extra || {});
-  const tmp = file + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  const tmp = file + '.tmp-' + process.pid + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n');
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) { /* ignore */ }
+    throw e;
+  }
 }
 // 读原文件里的照片，改完数据写回去时保留（页面导出的备份里可能带照片）
 function photosOf(file) {
@@ -105,6 +110,25 @@ function needRecipe(S, name) {
   if (!r) die(`没找到「${name}」。用 recipes 看看有哪些菜`);
   return r;
 }
+function parseQtyArg(rawQty, rawUnit) {
+  const s = String(rawQty == null ? '' : rawQty).trim()
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/．/g, '.');
+  const m = s.match(/^(\d+(?:\.\d+)?)([^\d.\s]+)?$/);
+  if (!m) return null;
+  const qty = parseFloat(m[1]);
+  if (!(isFinite(qty) && qty > 0)) return null;
+  let unit = rawUnit;
+  if (m[2]) {
+    if (rawUnit) return null;
+    const low = m[2].toLowerCase();
+    unit = low === 'g' ? '克' : low === 'kg' ? '千克' : low === 'ml' ? '毫升' : m[2];
+  } else if (unit) {
+    const low = String(unit).trim().toLowerCase();
+    unit = low === 'g' ? '克' : low === 'kg' ? '千克' : low === 'ml' ? '毫升' : String(unit).trim();
+  }
+  return { qty, unit };
+}
 // 单位换算：论克的食材可以写斤、两、千克
 function qtyIn(S, name, qty, unit) {
   const u = E.unitOf(S, name);
@@ -113,7 +137,8 @@ function qtyIn(S, name, qty, unit) {
   die(`「${name}」按${u}记，${unit} 换算不了。` + (u === '克' ? '可以写 克、两、斤、千克' : `请直接写${u}数`));
 }
 function parseExp(v) {
-  if (v === undefined || v === true) return null;
+  if (v === undefined) return null;
+  if (v === true) die('--exp 后面要写日期（2026-10-25）或天数（3）');
   const s = String(v).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(s) && CookEngine.parseYmd(s)) return s;
   const m = s.match(/^(\d{1,3})\s*天?$/);
@@ -162,16 +187,17 @@ const COMMANDS = {
     const r = needRecipe(S, args.join(''));
     const n = servingsOf(flags, S);
     const a = E.analyze(S, r, n);
+    const steps = Array.isArray(r.steps) ? r.steps : [];
     const json = Object.assign(dishJson(a), {
       servings: n,
       ingredients: a.items.map((x) => ({ name: x.n, need: x.need, have: x.have, short: x.short, unit: x.u })),
       seasonings: a.sp.map((x) => ({ name: x.n, have: x.has, optional: x.opt })),
-      steps: r.steps
+      steps
     });
     const lines = [`${r.name}（${r.cat}${r.min ? '，约 ' + r.min + ' 分钟' : ''}），按 ${n} 人份：`, '', '食材：'];
     a.items.forEach((x) => lines.push(`- ${x.n} 要 ${fmtQty(x.need, x.u)}，${x.short ? '差 ' + fmtQty(x.short, x.u) : '有 ' + fmtQty(x.have, x.u)}`));
     if (a.sp.length) lines.push('', '调料：' + a.sp.map((x) => x.n + (x.opt ? '（可选）' : '') + (x.has ? '' : x.opt ? '' : '【没有】')).join('、'));
-    if (r.steps.length) { lines.push('', '做法：'); r.steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`)); }
+    if (steps.length) { lines.push('', '做法：'); steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`)); }
     lines.push('', a.status === 'ok' ? '都够，可以做。' : `缺 ${a.mc} 样：${E.missText(a, 0, fmtQty)}`);
     return { json, text: lines.join('\n') };
   },
@@ -200,8 +226,8 @@ const COMMANDS = {
     }
     if (sub === 'add') {
       const name = E.normName(S, args[1]);
-      const qty = parseFloat(args[2]);
-      if (!name || !(qty > 0)) die('写法：stock add 名字 数量 [单位] [--exp 日期或天数] [--set]');
+      const parsed = parseQtyArg(args[2], args[3]);
+      if (!name || !parsed) die('写法：stock add 名字 数量 [单位] [--exp 日期或天数] [--set]');
       let inf = E.info(S, name);
       if (!inf) {
         if (!flags.unit || !flags.cat) {
@@ -214,7 +240,7 @@ const COMMANDS = {
         inf = E.info(S, name);
       }
       if (inf.c === '调料') return COMMANDS.spice(S, ['add', name], flags, ctx);
-      const q = qtyIn(S, name, qty, args[3]);
+      const q = qtyIn(S, name, parsed.qty, parsed.unit);
       E.addStock(S, name, q, parseExp(flags.exp), flags.set ? 'set' : 'add');
       ctx.dirty = true;
       const st = S.stock[name];
@@ -283,9 +309,30 @@ const COMMANDS = {
       const name = E.normName(S, args[1]);
       if (!name) die('写法：shop add 名字 [数量]');
       const inf = E.info(S, name);
+      if (inf && inf.c === '调料') {
+        E.addShop(S, name, 0, '');
+        ctx.dirty = true;
+        return { json: { name, qty: null, unit: null }, text: `已加入清单：${name}` };
+      }
+      if (!inf && flags.unit && !CookEngine.UNITS.includes(flags.unit)) {
+        die('单位只能是：' + CookEngine.UNITS.join(' '));
+      }
       const u = inf ? inf.u : (flags.unit || '个');
-      const q = args[2] ? qtyIn(S, name, parseFloat(args[2]), args[3]) : (u === '克' || u === '毫升' ? 500 : u ? 1 : 0);
-      E.addShop(S, name, q, inf && inf.c === '调料' ? '' : u);
+      let q;
+      if (args[2] !== undefined) {
+        const parsed = parseQtyArg(args[2], args[3]);
+        if (!parsed) die('数量要填大于 0 的数字，比如：shop add 青椒 2');
+        if (inf) q = qtyIn(S, name, parsed.qty, parsed.unit);
+        else if (!parsed.unit || parsed.unit === u) q = parsed.qty;
+        else if (u === '克') {
+          const g = CookEngine.toGrams(parsed.qty, parsed.unit);
+          if (g === null) die(`「${name}」按${u}记，${parsed.unit} 换算不了。可以写 克、两、斤、千克`);
+          q = g;
+        } else die(`「${name}」按${u}记，${parsed.unit} 换算不了。请直接写${u}数`);
+      } else {
+        q = u === '克' || u === '毫升' ? 500 : u ? 1 : 0;
+      }
+      E.addShop(S, name, q, u);
       ctx.dirty = true;
       return { json: { name, qty: q, unit: u }, text: `已加入清单：${name}${u ? ' ' + fmtQty(q, u) : ''}` };
     }
@@ -293,7 +340,7 @@ const COMMANDS = {
       const r = needRecipe(S, args.slice(1).join(''));
       const n = servingsOf(flags, S);
       const mc = E.missToShop(S, r, n);
-      ctx.dirty = true;
+      if (mc > 0) ctx.dirty = true;
       return { json: { name: r.name, added: mc }, text: mc ? `已把${r.name}缺的 ${mc} 样加入清单。` : `${r.name}按 ${n} 人份什么都不缺。` };
     }
     if (sub === 'bought') {
@@ -302,19 +349,26 @@ const COMMANDS = {
       const got = S.shop.filter((x) => !want.length || want.includes(x.n));
       if (!got.length) die('清单里没有这些：' + want.join('、'));
       got.forEach((x) => {
-        if (E.isSpice(S, x.n) || !x.u) { if (!S.spices.includes(x.n)) S.spices.push(x.n); }
-        else E.addStock(S, x.n, x.q || 1, null, 'add');
+        if (E.isSpice(S, x.n) || !x.u) {
+          if (!E.info(S, x.n)) S.custom.ing[x.n] = { u: '', c: '调料' };
+          if (!S.spices.includes(x.n)) S.spices.push(x.n);
+        } else {
+          if (!E.info(S, x.n)) S.custom.ing[x.n] = { u: CookEngine.UNITS.includes(x.u) ? x.u : '个', c: '其他' };
+          E.addStock(S, x.n, x.q || 1, null, 'add');
+        }
       });
       S.shop = S.shop.filter((x) => !got.includes(x));
       ctx.dirty = true;
       return { json: { moved: got.map((x) => x.n) }, text: '已放进库存：' + got.map((x) => x.n).join('、') };
     }
     if (sub === 'remove' || sub === 'rm') {
-      const want = args.slice(1).map((x) => E.normName(S, x));
+      const want = args.slice(1).map((x) => E.normName(S, x)).filter(Boolean);
+      if (!want.length) die('写法：shop remove 名字…');
       const before = S.shop.length;
       S.shop = S.shop.filter((x) => !want.includes(x.n));
-      ctx.dirty = true;
-      return { json: { removed: before - S.shop.length }, text: `已从清单删掉 ${before - S.shop.length} 样。` };
+      const removed = before - S.shop.length;
+      if (removed > 0) ctx.dirty = true;
+      return { json: { removed }, text: `已从清单删掉 ${removed} 样。` };
     }
     if (sub === 'clear') { S.shop = []; ctx.dirty = true; return { json: { cleared: true }, text: '清单已清空。' }; }
     die('shop 的子命令：list、add、missing、bought、remove、clear');
@@ -329,8 +383,9 @@ const COMMANDS = {
     const items = Array.isArray(raw) ? raw : raw && raw.items;
     if (!Array.isArray(items)) die('要是数组，或 {"items": [...]}，每项 { name, qty, unit, count, weight_g }');
     const rows = CookVision.mapItems(items, E.dict(S));
-    const json = { applied: !!flags.apply, rows: rows.map((r) => ({ kind: r.kind, name: r.name, qty: r.qty || null, unit: r.unit || null, known: r.known, note: r.note || '' })) };
-    if (flags.apply) {
+    const applied = !!(flags.apply && rows.length);
+    const json = { applied, rows: rows.map((r) => ({ kind: r.kind, name: r.name, qty: r.qty || null, unit: r.unit || null, known: r.known, note: r.note || '' })) };
+    if (applied) {
       rows.forEach((r) => {
         if (r.kind === 'spice') { if (!S.spices.includes(r.name)) S.spices.push(r.name); return; }
         if (!r.known) S.custom.ing[r.name] = { u: r.unit, c: '其他' };
@@ -338,8 +393,10 @@ const COMMANDS = {
       });
       ctx.dirty = true;
     }
-    const text = (rows.length ? rows.map((r) => r.kind === 'spice' ? `- 调料：${r.name}` : `- ${r.name} ${fmtQty(r.qty, r.unit)}${r.note ? '（' + r.note + '）' : ''}`).join('\n') : '没有可以记的食材。') +
-      (flags.apply ? '\n\n已写入库存。' : '\n\n还没写入。核对没问题后加 --apply 再运行一次。');
+    const text = rows.length
+      ? rows.map((r) => r.kind === 'spice' ? `- 调料：${r.name}` : `- ${r.name} ${fmtQty(r.qty, r.unit)}${r.note ? '（' + r.note + '）' : ''}`).join('\n') +
+        (applied ? '\n\n已写入库存。' : '\n\n还没写入。核对没问题后加 --apply 再运行一次。')
+      : '没有可以记的食材。';
     return { json, text };
   },
 
@@ -379,7 +436,8 @@ const COMMANDS = {
   },
 
   'recipe-remove'(S, args, flags, ctx) {
-    const name = args.join('');
+    const name = args.join('').trim();
+    if (!name) die('写法：recipe-remove 菜名');
     const r = S.custom.recipes.find((x) => x.name === name);
     if (!r) die(`「${name}」不是你自己加的菜谱（内置菜谱不能删）`);
     S.custom.recipes = S.custom.recipes.filter((x) => x !== r);
@@ -400,7 +458,7 @@ const COMMANDS = {
     const src = path.resolve(args[0]);
     let raw;
     try { raw = JSON.parse(fs.readFileSync(src, 'utf8')); } catch (e) { die('备份文件读不出来：' + e.message); }
-    if (!raw || typeof raw !== 'object' || !raw.stock) die('这个文件不是做饭模块的备份');
+    if (!raw || typeof raw !== 'object' || !raw.stock || typeof raw.stock !== 'object' || Array.isArray(raw.stock)) die('这个文件不是做饭模块的备份');
     ctx.replace = E.normalize(raw);
     ctx.extra = raw.photos ? { photos: raw.photos } : {};
     ctx.dirty = true;
@@ -439,13 +497,21 @@ const HELP = `homecook：按家里的库存算能做什么菜
 
 数据文件：--state > 环境变量 HOMECOOK_STATE > ~/.homecook/data.json`;
 
+const VALUE_FLAGS = ['state', 'servings', 'cat', 'exp', 'unit'];
+
 function main(argv) {
   const { pos, flags } = parseArgs(argv);
   const cmd = pos[0] || 'help';
-  const fn = COMMANDS[flags.help ? 'help' : cmd];
+  const isHelp = !!flags.help || cmd === 'help';
+  const fn = COMMANDS[isHelp ? 'help' : cmd];
   if (!fn) die(`没有「${cmd}」这个命令。运行 help 看看有哪些`);
+  if (!isHelp) {
+    for (const k of VALUE_FLAGS) {
+      if (flags[k] === true || flags[k] === '') die(`--${k} 后面要写值`);
+    }
+  }
   const file = statePath(flags);
-  const S = cmd === 'help' ? null : load(file);
+  const S = isHelp ? null : load(file);
   const ctx = { file, dirty: false };
   const res = fn(S, pos.slice(1), flags, ctx);
   if (ctx.dirty) save(file, ctx.replace || S, ctx.extra || photosOf(file));
